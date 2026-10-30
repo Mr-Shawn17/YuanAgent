@@ -1,0 +1,67 @@
+# ============================ Python ============================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+.venv312/
+venv/
+env/
+
+# ============================ 测试 ============================
+# tests/ 仅用于回归门禁（pytest），对项目运行非必须，不上传仓库；本地保留
+tests/
+
+# ============================ 测试 / 工具缓存 ============================
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+hypothesis/
+
+# ============================ 前端（Next.js）============================
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/next-env.d.ts
+frontend/*.tsbuildinfo
+
+# ============================ 运行时数据 / 本地敏感配置 ============================
+# data/ 下的 workspace（文件工具沙箱）与 kb_stub 均为运行时生成/本地数据，不上传；
+# 仅保留 data/kb_stub/chunks.json 作为 stub 示例知识库供参考。
+data/workspace/
+data/kb_stub/*
+!data/kb_stub/chunks.json
+
+# 真实配置含本地密码等敏感信息，忽略；仓库里放 config/agent.yaml.example 供参考
+config/agent.yaml
+
+# 环境变量 / 密钥（绝不提交任何真实密钥）
+.env
+.env.*
+!.env.example
+*.local
+
+# ============================ IDE / 系统 ============================
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*.log
+
+# ============================ 本地工具数据 ============================
+.trae/
+.workbuddy/
+/tools/
+inter_test/

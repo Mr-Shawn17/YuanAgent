@@ -1,0 +1,170 @@
+[
+  {
+    "point_id": "stub-coffee-001",
+    "text": "手冲咖啡的推荐参数：粉水比 1:15，水温 90~93 摄氏度，中细研磨，总萃取时间控制在 2 分 30 秒左右。闷蒸阶段用两倍于粉量的水浸润 30 秒，可以让咖啡粉充分排气。",
+    "source": {
+      "doc_id": "doc-coffee-01",
+      "title": "咖啡冲煮手册.md",
+      "section": "手冲基础参数",
+      "page": 1,
+      "uri": "kb://coffee/handbrew-basics",
+      "extra": {"lang": "zh"}
+    }
+  },
+  {
+    "point_id": "stub-coffee-002",
+    "text": "法压壶适合深烘焙豆子：粗研磨，粉水比 1:12，浸泡 4 分钟后缓慢压滤。法压壶保留更多油脂，口感厚重，但杯底会有细粉沉淀。",
+    "source": {
+      "doc_id": "doc-coffee-01",
+      "title": "咖啡冲煮手册.md",
+      "section": "其他器具",
+      "page": 3,
+      "uri": "kb://coffee/french-press",
+      "extra": {"lang": "zh"}
+    }
+  },
+  {
+    "point_id": "stub-coffee-003",
+    "text": "咖啡豆保存三原则：避光、密封、干燥。不建议冷藏存放日常饮用的豆子，反复取用会产生冷凝水；只有在密封分装后才适合冷冻长期保存。",
+    "source": {
+      "doc_id": "doc-coffee-01",
+      "title": "咖啡冲煮手册.md",
+      "section": "储存与保鲜",
+      "page": 5,
+      "uri": "kb://coffee/storage",
+      "extra": {"lang": "zh"}
+    }
+  },
+  {
+    "point_id": "stub-coffee-004",
+    "text": "常见风味问题排查：咖啡发酸可能是水温过低或研磨过粗导致萃取不足；发苦发涩通常是研磨过细或萃取时间过长造成过萃。",
+    "source": {
+      "doc_id": "doc-coffee-01",
+      "title": "咖啡冲煮手册.md",
+      "section": "风味问题排查",
+      "page": 6,
+      "uri": "kb://coffee/troubleshooting",
+      "extra": {"lang": "zh"}
+    }
+  },
+  {
+    "point_id": "stub-fitness-001",
+    "text": "每周健身计划建议：力量训练 3 次（推、拉、腿分化），有氧 2 次（每次 30~40 分钟中低强度），完全休息 2 天。新手前 4 周以动作模式学习为主，不追求大重量。",
+    "source": {
+      "doc_id": "doc-fitness-01",
+      "title": "每周健身计划.md",
+      "section": "训练安排",
+      "page": 1,
+      "uri": "kb://fitness/weekly-plan",
+      "extra": {"lang": "zh"}
+    }
+  },
+  {
+    "point_id": "stub-fitness-002",
+    "text": "深蹲动作要点：双脚与肩同宽，脚尖微外展，下蹲至大腿与地面平行，膝盖方向始终与脚尖一致，核心全程收紧，避免弓背。",
+    "source": {
+      "doc_id": "doc-fitness-01",
+      "title": "每周健身计划.md",
+      "section": "腿部训练",
+      "page": 2,
+      "uri": "kb://fitness/squat",
+      "extra": {"lang": "zh"}
+    }
+  },
+  {
+    "point_id": "stub-fitness-003",
+    "text": "减脂期饮食原则：热量缺口控制在每日 300~500 千卡，蛋白质摄入按每公斤体重 1.6~2 克计算，优先选择粗粮、瘦肉和蔬菜，训练日适当增加碳水。",
+    "source": {
+      "doc_id": "doc-fitness-01",
+      "title": "每周健身计划.md",
+      "section": "饮食与恢复",
+      "page": 4,
+      "uri": "kb://fitness/nutrition",
+      "extra": {"lang": "zh"}
+    }
+  },
+  {
+    "point_id": "stub-fitness-004",
+    "text": "睡眠是最容易被忽视的恢复手段：每晚保证 7~8 小时睡眠，生长激素在深睡阶段分泌最旺盛，熬夜会显著降低训练效果和恢复速度。",
+    "source": {
+      "doc_id": "doc-fitness-01",
+      "title": "每周健身计划.md",
+      "section": "饮食与恢复",
+      "page": 5,
+      "uri": "kb://fitness/sleep",
+      "extra": {"lang": "zh"}
+    }
+  },
+  {
+    "point_id": "stub-project-001",
+    "text": "混合检索 RAG 项目架构：Dense 向量检索（Qdrant）+ Sparse 稀疏检索（BM25）双路召回，RRF 融合排序（k=60），最后经过 reranker 精排输出 top_k 片段。",
+    "source": {
+      "doc_id": "doc-project-01",
+      "title": "个人项目笔记.md",
+      "section": "RAG 项目",
+      "page": 1,
+      "uri": "kb://project/rag-architecture",
+      "extra": {"lang": "zh", "project": "hybrid-rag"}
+    }
+  },
+  {
+    "point_id": "stub-project-002",
+    "text": "RAG 与 Agent 解耦方案：知识库服务通过 MCP over streamable-http 暴露 search 工具，Agent 侧只依赖 KnowledgeChunk 契约字段，切换真实服务时渲染、引用、审计代码零改动。",
+    "source": {
+      "doc_id": "doc-project-01",
+      "title": "个人项目笔记.md",
+      "section": "RAG 项目",
+      "page": 2,
+      "uri": "kb://project/rag-decoupling",
+      "extra": {"lang": "zh", "project": "hybrid-rag"}
+    }
+  },
+  {
+    "point_id": "stub-project-003",
+    "text": "日常聊天 Agent 项目技术栈：Python 3.12 + LangChain + FastAPI，MySQL 存会话与工具审计，Qdrant 存向量，CLI 先行、Web 界面后续通过 SSE 接入。",
+    "source": {
+      "doc_id": "doc-project-01",
+      "title": "个人项目笔记.md",
+      "section": "Agent 项目",
+      "page": 3,
+      "uri": "kb://project/agent-stack",
+      "extra": {"lang": "zh", "project": "daily-agent"}
+    }
+  },
+  {
+    "point_id": "stub-project-004",
+    "text": "工具权限设计经验：read 档直通，write 档需要用户确认，danger 档二次确认并记录审计。所有工具调用必须落审计表，包含参数摘要、结果状态和耗时。",
+    "source": {
+      "doc_id": "doc-project-01",
+      "title": "个人项目笔记.md",
+      "section": "Agent 项目",
+      "page": 4,
+      "uri": "kb://project/tool-permission",
+      "extra": {"lang": "zh", "project": "daily-agent"}
+    }
+  },
+  {
+    "point_id": "stub-travel-001",
+    "text": "短途旅行清单：身份证、充电宝（不超过 100Wh 可登机）、常用药品、一套换洗衣物、耳机。出发前确认天气，按需带雨伞或防晒。",
+    "source": {
+      "doc_id": "doc-travel-01",
+      "title": "旅行清单.md",
+      "section": "行前准备",
+      "page": 1,
+      "uri": "kb://travel/packing",
+      "extra": {"lang": "zh"}
+    }
+  },
+  {
+    "point_id": "stub-travel-002",
+    "text": "飞机携带液体规定：随身行李中单件液体不超过 100 毫升，总量装入一个 1 升透明密封袋；托运则无此限制。刀具类物品一律只能托运。",
+    "source": {
+      "doc_id": "doc-travel-01",
+      "title": "旅行清单.md",
+      "section": "安检注意事项",
+      "page": 2,
+      "uri": "kb://travel/security",
+      "extra": {"lang": "zh"}
+    }
+  }
+]

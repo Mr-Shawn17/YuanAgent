@@ -1,0 +1,52 @@
+# 内置工具装配配置（backend/app/tools/registry.py 读取）
+#
+# 字段说明：
+#   enabled       是否启用该工具
+#   tier          权限档位 read / write / danger；write 与 danger 执行前需要用户确认
+#   requires_key  依赖的 Settings 密钥字段名，密钥缺失时自动禁用（如 tavily_api_key）
+#   mode          预留给 search_knowledge_base 的 stub|mcp 切换（P1'-5 / P3'）
+#
+# sandbox_root 为文件类工具的沙箱根目录，相对路径按项目根解析；
+# 沙箱外的路径（../、绝对路径）一律拒绝。
+# default_allow: false 表示未在本文件列出的工具一律禁用。
+
+sandbox_root: data/workspace
+default_allow: false
+
+tools:
+  get_current_time:
+    enabled: true
+    tier: read
+
+  calculator:
+    enabled: true
+    tier: read
+
+  web_search:
+    enabled: true
+    tier: read
+    requires_key: tavily_api_key
+
+  list_directory:
+    enabled: true
+    tier: read
+
+  read_file:
+    enabled: true
+    tier: read
+
+  write_file:
+    enabled: true
+    tier: write
+
+  remember:
+    enabled: true
+    tier: write
+
+  # 知识库检索已由真实 RAG 服务（annual-report-rag，经 MCP 接入）提供，
+  # 暴露 rag__search / rag__list_companies / rag__get_chunk_detail / rag__health。
+  # 本地 stub 假数据工具已禁用，避免与真实 RAG 重复造成模型困惑。
+  search_knowledge_base:
+    enabled: false
+    tier: read
+    mode: stub

@@ -1,0 +1,7 @@
+{# 长期记忆注入片段：由 MemoryRecallMiddleware 在每次模型调用前拼接到 system prompt 末尾。 #}
+## 长期记忆
+以下是你此前记住的关于用户的信息，回答时自然参考，不要向用户逐条复述，也不要提到"记忆系统"：
+{% for memory in memories %}
+- [{{ memory.kind_label }}] {{ memory.preview }}
+{% endfor %}
+如果这些记忆与用户当前的说法冲突，以用户当前说法为准，并用 remember 工具更新。

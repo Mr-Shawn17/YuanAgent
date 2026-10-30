@@ -1,0 +1,39 @@
+from __future__ import annotations
+
+from app.rag.kb_tool import make_kb_tool
+from app.tools.base import BuiltinToolSpec
+from app.tools.builtin.calculator import make_calculator_tool
+from app.tools.builtin.filesystem import (
+    make_list_directory_tool,
+    make_read_file_tool,
+    make_write_file_tool,
+)
+from app.tools.builtin.memory import make_remember_tool
+from app.tools.builtin.time_tool import make_time_tool
+from app.tools.builtin.web_search import make_web_search_tool
+
+# 内置工具注册表：名称 → 工厂 + 默认档位 + 默认依赖密钥。
+# search_knowledge_base 的工厂来自 rag 模块（mode=stub 时产出，mode=mcp 时返回
+# None 由 registry 记禁用原因，P2' 后由 MCP 管理器提供同名工具）。
+BUILTIN_TOOL_SPECS: dict[str, BuiltinToolSpec] = {
+    "get_current_time": BuiltinToolSpec(make_time_tool, "read"),
+    "calculator": BuiltinToolSpec(make_calculator_tool, "read"),
+    "web_search": BuiltinToolSpec(make_web_search_tool, "read", "tavily_api_key"),
+    "list_directory": BuiltinToolSpec(make_list_directory_tool, "read"),
+    "read_file": BuiltinToolSpec(make_read_file_tool, "read"),
+    "write_file": BuiltinToolSpec(make_write_file_tool, "write"),
+    "remember": BuiltinToolSpec(make_remember_tool, "write"),
+    "search_knowledge_base": BuiltinToolSpec(make_kb_tool, "read"),
+}
+
+__all__ = [
+    "BUILTIN_TOOL_SPECS",
+    "make_calculator_tool",
+    "make_kb_tool",
+    "make_list_directory_tool",
+    "make_read_file_tool",
+    "make_remember_tool",
+    "make_time_tool",
+    "make_web_search_tool",
+    "make_write_file_tool",
+]
