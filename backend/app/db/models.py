@@ -91,6 +91,9 @@ class Message(Base):
     content: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
     citations: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
     tool_calls: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    # 执行链路图（主 Agent → 子 Agent → 工具 → 汇总）的最终完成态快照，
+    # 供历史回放渲染图谱（结构与前端 ExecutionGraphModel 对应，dict 形式存 JSON）
+    execution_graph: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     tokens_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

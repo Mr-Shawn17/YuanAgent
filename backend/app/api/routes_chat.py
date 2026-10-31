@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from time import perf_counter
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends
@@ -28,13 +29,16 @@ from langgraph.types import Command
 from app.agents.builder import thread_config
 from app.agents.state import initial_state_fields
 from app.api.deps import get_runtime
+from app.api.graph_aggregator import ExecutionGraphAggregator
 from app.api.runtime import AgentRuntime, make_web_approval
-from app.api.schemas import ApproveRequest, ChatRequest, SessionMessage
-from app.api.sse import SSE_HEADERS, sse_event
+from app.api.schemas import ApproveRequest, ChatRequest
+from app.api.sse import SSE_HEADERS, sse_event, with_heartbeat
 from app.core.errors import AppError, InputValidationError, NotFoundError
-from app.core.events import AgentEvent, EventBus
+from app.core.events import AgentEvent, EventBus, make_event_logger
 from app.core.logging import get_logger
 from app.db.message_sync import persist_new_messages
+from app.db.models import ROLE_ASSISTANT, ROLE_USER
+from app.db.session_repo import SessionRepo
 from app.middleware.telemetry import usage_of
 
 logger = get_logger(__name__)
@@ -75,6 +79,7 @@ async def schedule_post_run(
     *,
     before_messages: list[Any] | None = None,
     usage: dict[str, int] | None = None,
+    execution_graph: dict[str, Any] | None = None,
 ) -> None:
     """轮次成功结束后从 checkpoint 取全量消息，调度后台记忆抽取 + 同步业务表 messages。
 
@@ -99,6 +104,7 @@ async def schedule_post_run(
         after_messages=messages,
         tokens_in=usage.get("in", 0),
         tokens_out=usage.get("out", 0),
+        execution_graph=execution_graph,
     )
 
 
@@ -155,6 +161,22 @@ def _translate_event(event: dict[str, Any]) -> dict[str, Any] | None:
             "fail_count": event.get("fail_count", 0),
             "ms": event.get("total_ms", 0),
         }
+    if kind == "delegate_start":
+        return {
+            "type": "delegate_start",
+            "delegate_id": event.get("delegate_id", ""),
+            "agent": event.get("agent", ""),
+            "task": event.get("task", ""),
+        }
+    if kind == "delegate_end":
+        return {
+            "type": "delegate_end",
+            "delegate_id": event.get("delegate_id", ""),
+            "agent": event.get("agent", ""),
+            "ok": bool(event.get("ok")),
+            "ms": event.get("latency_ms", 0),
+            "error": event.get("error", ""),
+        }
     if kind == "citation":
         return {"type": "citation", "items": event.get("items") or []}
     if kind == "memory_recalled":
@@ -189,11 +211,22 @@ async def _stream_run(
     """
     bus = EventBus()
     events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    # 执行链路图谱聚合器：累积委派事件，轮次结束导出快照落库供历史回放
+    graph_agg = ExecutionGraphAggregator()
+
+    # 事件到达通知：_on_event 放入事件后置位，主循环据此立刻排空，无需等 token 流动。
+    # 这是「子 Agent 节点实时出现」的关键——fan_out/delegate 事件在子任务启动即发布，
+    # 而此刻 astream 的 token 流是静止的（主 Agent 在等工具返回），
+    # 若主循环只阻塞在 stream_q.get() 上，事件会堆积到全部子任务结束才一次性透传。
+    events_ready = asyncio.Event()
 
     def _on_event(event: AgentEvent) -> None:
         events.put_nowait(event.to_dict())
+        events_ready.set()
 
     unsubscribe = bus.subscribe(_on_event)
+    # 事件日志：工具调用 / 子 Agent 拆分等关键事件统一落运行日志（供事后排查）
+    unsubscribe_event_log = bus.subscribe(make_event_logger(session_id=session_id, user_id=user_id))
     agent, permission_mw = runtime.build_run_agent(
         session_id=session_id,
         event_bus=bus,
@@ -243,39 +276,64 @@ async def _stream_run(
     pending_approval: dict[str, Any] | None = None
     failure: dict[str, Any] | None = None
     stream_done = False
+    run_started = perf_counter()
+
     try:
         while True:
-            while not events.empty():
-                event = events.get_nowait()
+            # ① 先排空已到达的业务事件（保证 tool_start 先于其后的 token 到达前端）
+            while True:
+                try:
+                    event = events.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
                 if event.get("type") == "approval_required":
                     # resume 重放时同 call_id 的审批请求不再打扰前端
                     if event.get("call_id") != suppress_call_id:
                         pending_approval = event
                     continue
+                graph_agg.handle_event(event)
                 frame = _translate_event(event)
                 if frame is not None:
                     yield sse_event(frame)
+            # 排空后清空就绪标记：若排空期间又有新事件到达，_on_event 会重新 set，
+            # 使下一轮 event_wait 立即就绪，不丢失信号
+            events_ready.clear()
+
             if stream_done:
                 break
-            item = await stream_q.get()
-            if item is None:
-                stream_done = True
-                continue
-            if isinstance(item, Exception):
-                failure = error_payload(item)
-                break
-            mode, chunk = item
-            if mode == "messages":
-                message = chunk[0] if isinstance(chunk, tuple) else chunk
-                if isinstance(message, AIMessageChunk):
-                    delta = text_of(message.content)
-                    if delta:
-                        yield sse_event({"type": "token", "delta": delta})
-                    used = usage_of(message)
-                    usage["in"] += used.get("input_tokens", 0)
-                    usage["out"] += used.get("output_tokens", 0)
-            elif mode == "updates" and isinstance(chunk, dict) and "__interrupt__" in chunk:
-                interrupted = _interrupt_value(chunk["__interrupt__"])
+
+            # ② 并发等待 token 流与事件队列：任一就绪立即处理，事件不再被 token 阻塞
+            stream_get = asyncio.create_task(stream_q.get())
+            event_wait = asyncio.create_task(events_ready.wait())
+            done, pending = await asyncio.wait(
+                {stream_get, event_wait},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            # 回收未完成的任务，避免泄漏（asyncio.Queue.get 被取消时 item 会安全回队列）
+            for task in pending:
+                task.cancel()
+            # 若事件先就绪，回到循环顶部排空事件；若 token 先就绪，则处理 token
+            if stream_get in done:
+                item = stream_get.result()
+                if item is None:
+                    stream_done = True
+                    continue
+                if isinstance(item, Exception):
+                    failure = error_payload(item)
+                    break
+                mode, chunk = item
+                if mode == "messages":
+                    message = chunk[0] if isinstance(chunk, tuple) else chunk
+                    if isinstance(message, AIMessageChunk):
+                        delta = text_of(message.content)
+                        if delta:
+                            yield sse_event({"type": "token", "delta": delta})
+                        used = usage_of(message)
+                        usage["in"] += used.get("input_tokens", 0)
+                        usage["out"] += used.get("output_tokens", 0)
+                elif mode == "updates" and isinstance(chunk, dict) and "__interrupt__" in chunk:
+                    interrupted = _interrupt_value(chunk["__interrupt__"])
+            # event_wait 就绪则无需额外处理：下一轮循环顶部会排空 events 队列
 
         if failure is not None:
             yield sse_event({"type": "error", **failure})
@@ -301,25 +359,32 @@ async def _stream_run(
                         "tokens_out": usage["out"],
                     }
                 )
+            execution_graph = graph_agg.finalize(
+                total_ms=int((perf_counter() - run_started) * 1000)
+            )
             await schedule_post_run(
                 runtime,
                 agent,
                 config,
                 before_messages=before_messages,
                 usage=usage,
+                execution_graph=execution_graph,
             )
         yield sse_event({"type": "done", "session_id": session_id})
     finally:
         if not pump.done():
             pump.cancel()
         unsubscribe()
+        unsubscribe_event_log()
         await permission_mw.wait_pending_audits()
         runtime.runs.release(session_id)
 
 
 def _sse_response(frames: AsyncIterator[str]) -> StreamingResponse:
+    # with_heartbeat：流空闲期间每 5s 插入 ": ping" 注释帧保活，
+    # 防止代理层（Next dev rewrites 等）因空闲掐断 SSE 连接
     return StreamingResponse(
-        frames,
+        with_heartbeat(frames),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
@@ -338,6 +403,13 @@ async def chat(
     user_id = payload.user_id.strip() or runtime.user_id
     if not runtime.runs.acquire(session_id):
         raise AppError("该会话正在处理中，请稍后再试", code="conflict", status_code=409)
+    # 用户问题入口日志：记录问题内容（截断防超长）、会话与用户标识，供排查
+    logger.info(
+        "chat_request",
+        session_id=session_id,
+        user_id=user_id,
+        message=" ".join(message.split())[:200],
+    )
     graph_input = {
         "messages": [HumanMessage(content=message)],
         **initial_state_fields(
@@ -388,25 +460,62 @@ async def session_messages(
     session_id: str,
     runtime: AgentRuntime = Depends(get_runtime),
 ) -> dict[str, Any]:
-    """回放会话历史（只含 user/assistant 文本，工具轨迹不回放）。"""
+    """回放会话历史（user/assistant 文本 + assistant 的执行链路图谱）。
+
+    优先从业务表 messages 读（含图谱快照）；数据库不可用（database=None，如离线
+    测试）时降级回 checkpoint 读（只含文本，无图谱，与旧行为一致）。
+    """
+    if runtime.database is not None:
+        messages = await _messages_from_business_table(runtime, session_id)
+    else:
+        messages = await _messages_from_checkpoint(runtime, session_id)
+    return {"session_id": session_id, "messages": messages}
+
+
+async def _messages_from_business_table(
+    runtime: AgentRuntime, session_id: str
+) -> list[dict[str, Any]]:
+    """从业务表 messages 读历史（含图谱快照）。会话不存在时返回空列表。"""
+    assert runtime.database is not None
+    try:
+        async with runtime.database.session() as session:
+            rows = await SessionRepo(session).list_messages(session_id, limit=500)
+    except Exception:
+        logger.warning("replay_business_table_failed", session_id=session_id, exc_info=True)
+        return []
+    messages: list[dict[str, Any]] = []
+    for row in rows:
+        if row.role not in (ROLE_USER, ROLE_ASSISTANT):
+            continue
+        messages.append(
+            {
+                "role": row.role,
+                "content": row.content,
+                "graph": row.execution_graph,
+            }
+        )
+    return messages
+
+
+async def _messages_from_checkpoint(
+    runtime: AgentRuntime, session_id: str
+) -> list[dict[str, Any]]:
+    """从 checkpoint 读历史（只含文本，无图谱）——数据库不可用时的降级路径。"""
     entry = await runtime.checkpointer.aget_tuple(thread_config(session_id))
     if entry is None:
         raise NotFoundError("会话不存在")
     raw_messages = list((entry.checkpoint.get("channel_values") or {}).get("messages") or [])
-    messages: list[SessionMessage] = []
+    messages: list[dict[str, Any]] = []
     for message in raw_messages:
         if isinstance(message, HumanMessage):
             text = text_of(message.content).strip()
             if text:
-                messages.append(SessionMessage(role="user", content=text))
+                messages.append({"role": "user", "content": text, "graph": None})
         elif isinstance(message, AIMessage) and not message.tool_calls:
             text = text_of(message.content).strip()
             if text:
-                messages.append(SessionMessage(role="assistant", content=text))
-    return {
-        "session_id": session_id,
-        "messages": [item.model_dump() for item in messages],
-    }
+                messages.append({"role": "assistant", "content": text, "graph": None})
+    return messages
 
 
 __all__ = [

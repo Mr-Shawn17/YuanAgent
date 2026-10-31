@@ -63,6 +63,20 @@ export type SseFrame =
       ms: number;
     }
   | {
+      type: "delegate_start";
+      delegate_id: string;
+      agent: string;
+      task: string;
+    }
+  | {
+      type: "delegate_end";
+      delegate_id: string;
+      agent: string;
+      ok: boolean;
+      ms: number;
+      error: string;
+    }
+  | {
       type: "approval_required";
       run_id: string;
       call_id: string;
@@ -88,6 +102,8 @@ export interface SessionInfo {
 export interface SessionMessage {
   role: "user" | "assistant" | string;
   content: string;
+  /** 执行链路图谱（assistant 消息，后端落库的完成态快照；无委派时为 null） */
+  graph?: ExecutionGraphModel | null;
 }
 
 /** 前端展示用：一次工具调用的完整轨迹 */
@@ -126,6 +142,50 @@ export interface FanoutGraph {
   tasks: FanoutTaskNode[];
 }
 
+/** 图谱节点统一状态：等待 / 执行中 / 完成 / 失败 */
+export type GraphNodeStatus = "pending" | "running" | "ok" | "failed";
+
+/** 执行图谱：统一的「主 Agent → 子 Agent(→工具调用)」有向图节点模型。
+ *
+ * 一次对话轮次内可能有多段委派（fan_out 并行批次 与 串行 delegate 并存），
+ * 每段是一个 SubAgentNode；主 Agent 作为唯一根节点，汇总作为唯一叶子节点。
+ */
+export interface GraphToolNode {
+  callId: string;
+  tool: string;
+  status: GraphNodeStatus;
+  ms?: number;
+  preview?: string;
+  /** 进入 running 的客户端时间戳，驱动实时计时 */
+  startedAt?: number;
+}
+
+export interface SubAgentNode {
+  /** 委派 id（fanout_id 或 delegate_id） */
+  id: string;
+  agent: string;
+  task: string;
+  status: GraphNodeStatus;
+  ms?: number;
+  error?: string;
+  /** 并行批次内的子任务归属 id（fan_out 用），串行 delegate 为空 */
+  taskId?: string;
+  tools: GraphToolNode[];
+  /** 进入 running 的客户端时间戳，驱动实时计时 */
+  startedAt?: number;
+}
+
+/** 执行图谱整体：一轮对话的委派拓扑 */
+export interface ExecutionGraphModel {
+  status: "running" | "done";
+  subAgents: SubAgentNode[];
+  okCount: number;
+  failCount: number;
+  totalMs?: number;
+  /** 主 Agent 节点进入 running 的客户端时间戳，驱动全程实时计时（send 即刻创建） */
+  mainStartedAt?: number;
+}
+
 /** 前端展示用：一条聊天气泡 */
 export interface ChatMessage {
   id: string;
@@ -138,8 +198,8 @@ export interface ChatMessage {
   usage?: { tokensIn: number; tokensOut: number };
   error?: string;
   streaming?: boolean;
-  /** 执行链路图（本轮有 fan_out 批次时非空） */
-  fanout?: FanoutGraph;
+  /** 执行链路图（本轮有子 Agent 委派时非空，含 fan_out 并行与串行 delegate） */
+  graph?: ExecutionGraphModel;
 }
 
 /** 待审批请求（approval_required 帧） */

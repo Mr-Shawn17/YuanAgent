@@ -51,34 +51,41 @@ def diff_new_rows(
     after_messages: list[Any],
     tokens_in: int = 0,
     tokens_out: int = 0,
-) -> list[tuple[str, str, list[Any] | None, int | None, int | None]]:
-    """对比前后消息列表，产出本轮新增的 (role, text, citations, tokens_in, tokens_out) 行。
+    execution_graph: dict[str, Any] | None = None,
+) -> list[tuple[str, str, list[Any] | None, dict[str, Any] | None, int | None, int | None]]:
+    """对比前后消息列表，产出本轮新增行。
 
-    只取 HumanMessage / AIMessage 的文本内容，跳过 tool/system/空内容；
-    tokens 用量（整轮累计）记在最后一条 assistant 消息上。
+    每行 (role, text, citations, execution_graph, tokens_in, tokens_out)；
+    只取 HumanMessage / AIMessage 文本，跳过 tool/system/空内容；
+    tokens 用量与执行链路图谱记在最后一条 assistant 消息上。
     """
     before_len = len(before_messages)
     new_messages = after_messages[before_len:]
-    rows: list[tuple[str, str, list[Any] | None, int | None, int | None]] = []
+    rows: list[
+        tuple[str, str, list[Any] | None, dict[str, Any] | None, int | None, int | None]
+    ] = []
     for message in new_messages:
         if isinstance(message, HumanMessage):
             text = _text_of(message.content)
             if text:
-                rows.append((ROLE_USER, text, None, None, None))
+                rows.append((ROLE_USER, text, None, None, None, None))
         elif isinstance(message, AIMessage):
             text = _text_of(message.content)
             if text:
-                rows.append((ROLE_ASSISTANT, text, _citations_of(message), None, None))
+                rows.append((ROLE_ASSISTANT, text, _citations_of(message), None, None, None))
     if not rows:
         return []
 
-    # tokens 用量记在最后一条 assistant 消息上（整轮累计，粒度到轮）；
-    # 无用量数据（都为 0）时保持 None，避免污染成本字段。
-    if tokens_in or tokens_out:
+    # tokens 用量与执行链路图谱记在最后一条 assistant 消息上（整轮累计，粒度到轮）；
+    # 无用量数据（都为 0）时 tokens 保持 None，避免污染成本字段。
+    has_payload = bool(tokens_in or tokens_out or execution_graph)
+    if has_payload:
         for i in range(len(rows) - 1, -1, -1):
             if rows[i][0] == ROLE_ASSISTANT:
-                role, text, citations, _tin, _tout = rows[i]
-                rows[i] = (role, text, citations, tokens_in, tokens_out)
+                role, text, citations, _graph, _tin, _tout = rows[i]
+                tin = tokens_in if tokens_in else None
+                tout = tokens_out if tokens_out else None
+                rows[i] = (role, text, citations, execution_graph, tin, tout)
                 break
     return rows
 
@@ -92,6 +99,7 @@ async def persist_new_messages(
     after_messages: list[Any],
     tokens_in: int = 0,
     tokens_out: int = 0,
+    execution_graph: dict[str, Any] | None = None,
 ) -> int:
     """把 after 相对 before 新增的 user/assistant 消息写入业务表，返回写入条数。
 
@@ -104,6 +112,7 @@ async def persist_new_messages(
         after_messages=after_messages,
         tokens_in=tokens_in,
         tokens_out=tokens_out,
+        execution_graph=execution_graph,
     )
     if not rows:
         return 0
@@ -112,12 +121,13 @@ async def persist_new_messages(
     try:
         async with database.session() as session:
             repo = SessionRepo(session)
-            for role, text, citations, tin, tout in rows:
+            for role, text, citations, graph, tin, tout in rows:
                 await repo.add_message(
                     session_id,
                     role=role,
                     content=text,
                     citations=citations,
+                    execution_graph=graph,
                     tokens_in=tin,
                     tokens_out=tout,
                     user_id=user_id,

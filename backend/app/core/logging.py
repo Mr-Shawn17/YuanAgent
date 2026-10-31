@@ -4,11 +4,20 @@ import logging
 import re
 import sys
 from collections.abc import MutableMapping
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 
 import structlog
 
+from app.core.config import PROJECT_ROOT
+
 REDACTED = "***"
+
+# 文件日志：默认项目根/log，按天一文件，仅保留近 N 天（启动时清理过期文件）
+DEFAULT_LOG_DIR = PROJECT_ROOT / "log"
+DEFAULT_RETENTION_DAYS = 7
+_LOG_FILE_PREFIX = "backend-"
 
 _SENSITIVE_KEY_HINTS: tuple[str, ...] = (
     "api_key",
@@ -69,7 +78,51 @@ def secret_redactor(
     return event_dict
 
 
-def setup_logging(level: str = "INFO", *, json_output: bool = False, force: bool = False) -> None:
+def cleanup_old_logs(log_dir: Path, prefix: str, retention_days: int) -> None:
+    """删除超过保留期的日志文件（按文件名中的日期判断，失败静默不影响启动）。"""
+    if retention_days <= 0 or not log_dir.exists():
+        return
+    cutoff = datetime.now() - timedelta(days=retention_days)
+    cutoff_name = f"{prefix}{cutoff.strftime('%Y-%m-%d')}"
+    try:
+        for file in log_dir.glob(f"{prefix}*.log"):
+            if file.name <= cutoff_name:  # 日期字符串可直接字典序比较
+                file.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _make_file_handler(log_dir: Path, prefix: str) -> logging.Handler:
+    """按天命名的文件 handler：backend-YYYY-MM-DD.log（当天文件，启动跨天不切分）。"""
+    log_dir.mkdir(parents=True, exist_ok=True)
+    filename = log_dir / f"{prefix}{datetime.now().strftime('%Y-%m-%d')}.log"
+    handler = logging.FileHandler(filename, encoding="utf-8")
+    # 文件用无色 ConsoleRenderer（颜色码写进文件会污染 grep）
+    formatter = structlog.stdlib.ProcessorFormatter(
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            secret_redactor,
+            structlog.dev.ConsoleRenderer(colors=False, sort_keys=False),
+        ],
+        foreign_pre_chain=[
+            structlog.contextvars.merge_contextvars,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso", utc=False),
+        ],
+    )
+    handler.setFormatter(formatter)
+    return handler
+
+
+def setup_logging(
+    level: str = "INFO",
+    *,
+    json_output: bool = False,
+    force: bool = False,
+    log_dir: str | Path | None = None,
+    retention_days: int = DEFAULT_RETENTION_DAYS,
+) -> None:
     log_level = getattr(logging, level.upper(), logging.INFO)
 
     renderer: structlog.types.Processor = (
@@ -118,9 +171,15 @@ def setup_logging(level: str = "INFO", *, json_output: bool = False, force: bool
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(formatter)
 
+    # 文件日志：与终端同一脱敏链路；_make_file_handler 内部 mkdir
+    resolved_log_dir = Path(log_dir) if log_dir else DEFAULT_LOG_DIR
+    cleanup_old_logs(resolved_log_dir, _LOG_FILE_PREFIX, retention_days)
+    file_handler = _make_file_handler(resolved_log_dir, _LOG_FILE_PREFIX)
+
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
+    root.addHandler(file_handler)
     root.setLevel(log_level)
 
     for noisy in ("httpx", "httpcore", "openai", "urllib3", "qdrant_client"):
@@ -133,4 +192,12 @@ def get_logger(name: str | None = None, **initial_values: Any) -> structlog.stdl
     return cast("structlog.stdlib.BoundLogger", structlog.get_logger(name, **initial_values))
 
 
-__all__ = ["REDACTED", "get_logger", "secret_redactor", "setup_logging"]
+__all__ = [
+    "DEFAULT_LOG_DIR",
+    "DEFAULT_RETENTION_DAYS",
+    "REDACTED",
+    "cleanup_old_logs",
+    "get_logger",
+    "secret_redactor",
+    "setup_logging",
+]

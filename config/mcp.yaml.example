@@ -1,0 +1,111 @@
+# ============================================================
+# 这是配置模板（example）。实际运行请复制为 mcp.yaml：
+#   cp config/mcp.yaml.example config/mcp.yaml
+# 然后按需填写各 Server 的 Token 等本地凭据。
+#
+# mcp.yaml 已被 .gitignore 忽略（含 MCP Token 等敏感信息），
+# 本 example 模板用于让克隆仓库的人快速了解配置结构。
+# ============================================================
+
+# MCP Server 接入配置（backend/app/mcp/config.py 读取）
+# 接入任意第三方 MCP Server 只需在这里加一段配置，不用改代码。
+# 字段说明：
+#   transport: stdio（子进程）或 streamable_http（远程 URL，也接受 http / streamable-http 写法）
+#   permission_tier: 该 Server 全部工具继承的权限档位（read/write/danger），留空按 write 保守处理
+#   allow_tools: 工具白名单，留空表示全部接入
+#   timeout_seconds: 单次请求超时（秒）
+#   headers: streamable_http 的附加请求头（如 Authorization: Bearer <token>）
+#   env: stdio 子进程的环境变量
+#   mode: 协议协商 auto / legacy（旧版服务端 2024-11-05 协议须设 legacy）
+servers:
+  # 本地 mock server：验证 MCP 链路用，stdio 拉起 scripts/mock_mcp_server.py
+  - name: mock
+    transport: stdio
+    command: python
+    args: ["scripts/mock_mcp_server.py"]
+    enabled: true
+    permission_tier: read
+
+  # 年报混合检索 RAG 服务示例（替换为你自己部署的 RAG MCP 服务地址）
+  - name: rag
+    transport: streamable_http
+    url: http://127.0.0.1:8100/mcp
+    enabled: false
+    mode: legacy
+    permission_tier: read
+    timeout_seconds: 60
+    allow_tools: ["list_companies", "search", "get_chunk_detail", "health"]
+
+  # ============ 麦当劳官方 MCP（open.mcd.cn 申请 Token）============
+  # 准备工作：
+  #   1. 浏览器打开 https://open.mcd.cn 注册/登录，创建应用获取 MCP Token
+  #   2. 将 Token 替换下方 Authorization 的 <你的MCD_MCP_TOKEN> 占位符
+  #   3. 把 enabled 改为 true，重启后端
+  # 说明：
+  #   - transport 为 streamable_http + Bearer Token，限流 600 次/分钟（免费）
+  #   - permission_tier: read —— 只接入白名单内的查询类工具，全部免审批；
+  #     create-order / cancel-order 等交易类工具刻意不接入（真实下单动钱）
+  #   - allow_tools 按麦当劳官方工具名填写；若申请后发现工具名不一致，
+  #     以 open.mcd.cn 控制台展示的为准调整
+  - name: mcd
+    transport: streamable_http
+    url: https://mcp.mcd.cn
+    enabled: false
+    permission_tier: read
+    timeout_seconds: 60
+    headers:
+      Authorization: "Bearer <你的MCD_MCP_TOKEN>"
+    # 查询类工具白名单（29 个，全部 read 档免审批）。
+    # 刻意不接入的 7 个写/交易类工具：create-order / cancel-order / mall-create-order /
+    # party-order-create（下单）、draw-lottery（消耗积分）、auto-bind-coupons（一键领券）、
+    # delivery-create-address（新增地址）——如需 AI 代下单/领券/抽奖，须先开发按工具分档能力。
+    allow_tools:
+      # —— 餐品与价格 ——
+      - list-nutrition-foods      # 餐品营养信息列表
+      - query-meals              # 当前门店可售卖菜单
+      - query-meal-detail        # 餐品详情（套餐组成/可替换项）
+      - calculate-price          # 整单核价（含配送费/优惠/应付）
+      # —— 门店 ——
+      - query-nearby-stores      # 附近可用门店
+      - query-meal-assistance    # 助餐服务查询（企业团餐）
+      # —— 配送（仅查询）——
+      - delivery-query-addresses # 可配送地址列表
+      - delivery-query-stores    # 地址附近可配送门店
+      # —— 优惠与促销 ——
+      - query-store-coupons      # 当前门店可用优惠券
+      - available-coupons        # 麦麦省可领券列表
+      - query-my-coupons         # 我的优惠券
+      - query-promotions         # 门店促销规则（满减/满折）
+      - campaign-calendar        # 当月营销活动日历
+      # —— 积分与账户 ——
+      - query-my-account         # 积分账户（可用/累计/冻结/将过期）
+      - query-lottery-info       # 积分抽奖活动信息
+      - query-my-prizes          # 我的奖品记录
+      # —— 订单查询 ——
+      - query-order              # 订单详情与进度
+      - order-list               # 近期历史订单
+      # —— 麦麦商城（仅查询）——
+      - query-mall-products      # 商城商品列表
+      - mall-product-detail      # 商城商品详情
+      - mall-gift-products       # 麦有礼商品列表
+      - mall-order-list          # 商城订单列表
+      - mall-order-detail        # 商城订单详情
+      # —— 主题活动（仅查询）——
+      - query-party-city         # 主题活动城市列表
+      - query-party-store        # 主题活动门店列表
+      - query-party-store-date    # 主题活动可预约日期
+      - query-party-store-session # 主题活动可预约场次
+      - query-survey-coupon      # 问卷优惠券查询（服务端新增）
+      # —— 其他 ——
+      - now-time-info            # 当前时间信息
+
+  # ============ AIHOT AI 资讯 MCP（aihot.news 官方云端）============
+  # 无需 API Key，开箱即用；免费档每日限 50 次查询，超出次日恢复。
+  # 准备：直接把 enabled 改为 true 重启即可；若每日 50 次不够用，
+  #       可购买 Pro（LICENSE_KEY 方式，见 aihot.news 说明）。
+  - name: aihot
+    transport: streamable_http
+    url: https://aihot.news/api/mcp
+    enabled: false
+    permission_tier: read
+    timeout_seconds: 30

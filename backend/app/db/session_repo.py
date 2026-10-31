@@ -84,6 +84,7 @@ class SessionRepo:
         content: str,
         citations: list[Any] | None = None,
         tool_calls: list[Any] | None = None,
+        execution_graph: dict[str, Any] | None = None,
         tokens_in: int | None = None,
         tokens_out: int | None = None,
         user_id: str = "",
@@ -96,6 +97,7 @@ class SessionRepo:
             content=content,
             citations=citations,
             tool_calls=tool_calls,
+            execution_graph=execution_graph,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
         )

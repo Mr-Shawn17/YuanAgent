@@ -95,6 +95,9 @@ class Settings(BaseModel):
     app_env: str = "dev"
     log_level: str = "INFO"
     log_json: bool = False
+    # 文件日志：目录（相对路径按项目根解析）与保留天数（启动时清理过期文件；0=永久保留）
+    log_dir: str = "log"
+    log_retention_days: int = Field(default=7, ge=0)
     data_dir: Path = PROJECT_ROOT / "data"
     default_user_id: str = "me"
     cors_origins: str = "http://localhost:3000"
@@ -142,6 +145,15 @@ class Settings(BaseModel):
             msg = f"LOG_LEVEL 非法：{value}，可选 DEBUG/INFO/WARNING/ERROR/CRITICAL"
             raise ValueError(msg)
         return level
+
+    @field_validator("log_dir")
+    @classmethod
+    def _resolve_log_dir(cls, value: str) -> str:
+        return value if Path(value).is_absolute() else str((PROJECT_ROOT / value).resolve())
+
+    @property
+    def log_dir_path(self) -> Path:
+        return Path(self.log_dir)
 
     @field_validator("data_dir")
     @classmethod

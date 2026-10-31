@@ -72,7 +72,12 @@ async def _build_runtime() -> tuple[AgentRuntime, AsyncExitStack]:
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
-    setup_logging(settings.log_level)
+    setup_logging(
+        settings.log_level,
+        json_output=settings.log_json,
+        log_dir=settings.log_dir_path,
+        retention_days=settings.log_retention_days,
+    )
     runtime, stack = await _build_runtime()
     app.state.runtime = runtime
     logger.info("api_runtime_ready", user_id=runtime.user_id)

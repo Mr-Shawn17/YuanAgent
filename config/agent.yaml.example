@@ -71,6 +71,9 @@ runtime:
   app_env: dev
   log_level: INFO
   log_json: false
+  # 文件日志：目录（相对路径按项目根解析）与保留天数（0=永久保留）
+  log_dir: log
+  log_retention_days: 7
   data_dir: data
   default_user_id: me
   cors_origins: http://localhost:3000
@@ -170,6 +173,8 @@ routing:
         - web_search
         - search_knowledge_base
         - rag__*
+        - mcd__*            # 麦当劳查询类 MCP 工具（见 config/mcp.yaml 的 mcd 条目）
+        - aihot__*          # AIHOT AI 资讯 MCP 工具（见 config/mcp.yaml 的 aihot 条目）
         - read_file
         - list_directory
         - calculator

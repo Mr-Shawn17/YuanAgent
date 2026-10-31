@@ -3,6 +3,7 @@
 用法：
     python scripts/start_backend.py            # 默认热重载（--reload），适合开发
     python scripts/start_backend.py --no-reload  # 生产模式（不热重载）
+    python scripts/start_backend.py --skip-check  # 跳过环境预检（不建议）
 
 启动参数全部来自 config/agent.yaml 的 server 段：
     python_env     Python 环境根目录（如 D:/software/miniconda3/envs/py312），
@@ -13,6 +14,8 @@
 - 本脚本用配置的 Python 环境重新拉起 uvicorn 子进程（而非当前解释器），
   保证与 Makefile 里 `PY ?= .venv312/Scripts/python.exe` 的语义一致。
 - 若 python_env 留空，回退到当前解释器（sys.executable）。
+- 启动前自动执行环境预检（scripts/preflight.py）：必须项（配置/解释器/依赖/
+  MySQL/LLM Key）任一失败立即退出；可选项（MCP Server）失败仅提示。
 """
 
 from __future__ import annotations
@@ -31,6 +34,18 @@ try:
 except ImportError:  # pragma: no cover - 解释器缺 pyyaml 时给出友好提示
     print("缺少依赖 PyYAML，请先安装：pip install pyyaml", file=sys.stderr)
     sys.exit(1)
+
+
+def run_preflight() -> None:
+    """启动前环境预检；必须项失败时直接终止（错误信息由 preflight 打印）。"""
+    preflight = Path(__file__).resolve().parent / "preflight.py"
+    probe = subprocess.run(
+        [sys.executable, str(preflight), "--scope", "backend"],
+        cwd=str(PROJECT_ROOT),
+    )
+    if probe.returncode != 0:
+        print("环境预检未通过，终止启动（--skip-check 可跳过，不建议）。", file=sys.stderr)
+        raise SystemExit(probe.returncode)
 
 
 def _load_server_config() -> dict:
@@ -71,7 +86,15 @@ def main() -> int:
         help="关闭热重载（默认开启 --reload，适合开发）",
     )
     parser.add_argument("--host", default="127.0.0.1", help="监听地址（默认 127.0.0.1）")
+    parser.add_argument(
+        "--skip-check",
+        action="store_true",
+        help="跳过启动前环境预检（不建议）",
+    )
     args = parser.parse_args()
+
+    if not args.skip_check:
+        run_preflight()
 
     server = _load_server_config()
     python_env = str(server.get("python_env", "") or "")

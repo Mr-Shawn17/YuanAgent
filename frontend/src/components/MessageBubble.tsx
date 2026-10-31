@@ -40,7 +40,7 @@ export default function MessageBubble({ message }: { message: ChatMessage }) {
                 💭 已召回 {message.memoryCount} 条长期记忆
               </p>
             ) : null}
-            {message.fanout ? <ExecutionGraph graph={message.fanout} /> : null}
+            {message.graph ? <ExecutionGraph graph={message.graph} /> : null}
             <ToolTrace tools={message.tools} />
             <CitationCards items={message.citations} />
             {message.usage ? (

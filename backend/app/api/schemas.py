@@ -32,10 +32,11 @@ class SessionInfo(BaseModel):
 
 
 class SessionMessage(BaseModel):
-    """会话历史回放消息（只含 user/assistant 两角色，工具轨迹不回放）。"""
+    """会话历史回放消息（user/assistant 两角色；assistant 可携带执行链路图谱）。"""
 
     role: str
     content: str
+    graph: dict[str, Any] | None = None
 
 
 class OpenAIMessage(BaseModel):

@@ -27,6 +27,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.agents.state import AgentState
 from app.core.config import load_yaml_raw
 from app.core.events import (
+    DelegateEndEvent,
+    DelegateStartEvent,
     EventBus,
     FanoutEndEvent,
     FanoutStartEvent,
@@ -248,11 +250,19 @@ def build_sub_agent(
     )
 
 
-def make_delegate_tool(name: str, config: SubAgentConfig, graph: Any) -> BaseTool:
+def make_delegate_tool(
+    name: str,
+    config: SubAgentConfig,
+    graph: Any,
+    event_bus: EventBus | None = None,
+) -> BaseTool:
     """生成 delegate_to_<name> 工具：把自包含任务委派给子 Agent 并取回最终答复。
 
     session_id / user_id 经 InjectedState 从主图 state 动态读取（CLI 切换会话后
     不重建 agent，闭包值会过期），子 Agent 的审计与事件据此关联到当前会话。
+
+    委派前后发布 DelegateStartEvent / DelegateEndEvent，供前端画成
+    「主 Agent → 子 Agent」节点（与 fan_out 并行图并列）。
     """
     tool_name = f"{DELEGATE_PREFIX}{name}"
     description = (
@@ -267,13 +277,42 @@ def make_delegate_tool(name: str, config: SubAgentConfig, graph: Any) -> BaseToo
         task: str,
         state: Annotated[dict[str, Any], InjectedState],
     ) -> str:
+        delegate_id = f"del_{int(perf_counter() * 1000)}"
+        started = perf_counter()
+        if event_bus is not None:
+            await event_bus.publish(
+                DelegateStartEvent(delegate_id=delegate_id, agent=name, task=task)
+            )
         payload: dict[str, Any] = {
             "messages": [HumanMessage(content=task)],
             "session_id": _state_value(state, "session_id"),
             "user_id": _state_value(state, "user_id"),
         }
-        result = await asyncio.wait_for(graph.ainvoke(payload), timeout=config.timeout_seconds)
-        return _final_text(result)
+        try:
+            result = await asyncio.wait_for(graph.ainvoke(payload), timeout=config.timeout_seconds)
+            if event_bus is not None:
+                await event_bus.publish(
+                    DelegateEndEvent(
+                        delegate_id=delegate_id,
+                        agent=name,
+                        ok=True,
+                        latency_ms=int((perf_counter() - started) * 1000),
+                    )
+                )
+            return _final_text(result)
+        except Exception as exc:
+            error_text = f"{type(exc).__name__}: {exc}"[:200]
+            if event_bus is not None:
+                await event_bus.publish(
+                    DelegateEndEvent(
+                        delegate_id=delegate_id,
+                        agent=name,
+                        ok=False,
+                        latency_ms=int((perf_counter() - started) * 1000),
+                        error=error_text,
+                    )
+                )
+            raise
 
     return _delegate
 
@@ -474,7 +513,7 @@ def apply_routing(
         delegated[name] = matched
         sub_graphs[name] = graph
         sub_tiers[name] = highest_tier(tiers.values())
-        delegate_tools.append(make_delegate_tool(name, sub_config, graph))
+        delegate_tools.append(make_delegate_tool(name, sub_config, graph, event_bus=event_bus))
         delegate_tiers[f"{DELEGATE_PREFIX}{name}"] = highest_tier(tiers.values())
 
     if not delegated:

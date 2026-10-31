@@ -4,7 +4,7 @@ import inspect
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from app.core.logging import get_logger
 
@@ -185,6 +185,38 @@ class FanoutEndEvent(AgentEvent):
         return "fanout_end"
 
 
+@dataclass(frozen=True)
+class DelegateStartEvent(AgentEvent):
+    """串行委派（delegate_to_<name>）开始：把单个任务委派给指定子 Agent。
+
+    与 fan_out 的区别：单任务、串行、无并行批次概念；前端据此画成
+    「主 Agent → 子 Agent」的独立节点（与 fan_out 并行图并列）。
+    """
+
+    delegate_id: str
+    agent: str
+    task: str = ""
+
+    @property
+    def type(self) -> str:
+        return "delegate_start"
+
+
+@dataclass(frozen=True)
+class DelegateEndEvent(AgentEvent):
+    """串行委派结束：ok=False 时 error 为失败原因摘要。"""
+
+    delegate_id: str
+    agent: str
+    ok: bool
+    latency_ms: int = 0
+    error: str = ""
+
+    @property
+    def type(self) -> str:
+        return "delegate_end"
+
+
 # 事件总线不依赖 asyncio.Queue：CLI 同进程直接回调，P5' SSE 再按需加队列适配层
 EventHandler = Callable[[AgentEvent], "Awaitable[None] | None"]
 
@@ -230,6 +262,8 @@ __all__ = [
     "ApprovalDecidedEvent",
     "ApprovalRequiredEvent",
     "CitationsEvent",
+    "DelegateEndEvent",
+    "DelegateStartEvent",
     "EventBus",
     "EventHandler",
     "FanoutEndEvent",
@@ -241,7 +275,134 @@ __all__ = [
     "ToolEndEvent",
     "ToolStartEvent",
     "current_task_id",
+    "make_event_logger",
 ]
+
+
+def make_event_logger(
+    *,
+    session_id: str = "",
+    user_id: str = "",
+) -> EventHandler:
+    """生成一个事件日志处理器：把关键业务事件结构化写入运行日志。
+
+    供 CLI 与 SSE 两条链路复用——订阅到 EventBus 后，工具调用、子 Agent
+    拆分（fan_out/delegate）等事件会自动落盘，便于事后排查完整调用链。
+    用户问题本身由入口层（routes_chat.chat / cli）单独记一条，本处理器只
+    负责过程事件，避免重复。
+
+    记录的事件类型与字段（日志量已控制，不落大段 args/preview 全文）：
+    - tool_start / tool_end：工具名、档位、来源、子任务、耗时、成败
+    - fanout_start / fanout_task_start / fanout_task_end / fanout_end：子 Agent 拆分粒度
+    - approval_required / approval_decided：人工审批触发点（write/danger 档）
+
+    该处理器永不抛异常（异常仅记 warning），绝不影响对话主流程。
+    """
+
+    def _log(event: AgentEvent) -> None:
+        try:
+            etype = event.type
+            if etype == "tool_start":
+                ev = cast(ToolStartEvent, event)
+                logger.info(
+                    "tool_call_start",
+                    session_id=session_id,
+                    user_id=user_id,
+                    tool=ev.tool_name,
+                    tier=ev.tier,
+                    origin=ev.origin,
+                    task_id=ev.task_id or None,
+                )
+            elif etype == "tool_end":
+                ev2 = cast(ToolEndEvent, event)
+                logger.info(
+                    "tool_call_end",
+                    session_id=session_id,
+                    user_id=user_id,
+                    tool=ev2.tool_name,
+                    ok=ev2.ok,
+                    latency_ms=ev2.latency_ms,
+                    task_id=ev2.task_id or None,
+                    preview=(ev2.preview or "")[:120] if not ev2.ok else None,
+                )
+            elif etype == "fanout_start":
+                ev3 = cast(FanoutStartEvent, event)
+                agents = [t.get("agent") for t in ev3.tasks]
+                logger.info(
+                    "fanout_start",
+                    session_id=session_id,
+                    user_id=user_id,
+                    fanout_id=ev3.fanout_id,
+                    task_count=len(ev3.tasks),
+                    agents=agents,
+                )
+            elif etype == "fanout_task_end":
+                ev4 = cast(FanoutTaskEndEvent, event)
+                logger.info(
+                    "fanout_task_end",
+                    session_id=session_id,
+                    user_id=user_id,
+                    fanout_id=ev4.fanout_id,
+                    agent=ev4.agent,
+                    ok=ev4.ok,
+                    latency_ms=ev4.latency_ms,
+                    error=(ev4.error or None) if not ev4.ok else None,
+                )
+            elif etype == "fanout_end":
+                ev5 = cast(FanoutEndEvent, event)
+                logger.info(
+                    "fanout_end",
+                    session_id=session_id,
+                    user_id=user_id,
+                    fanout_id=ev5.fanout_id,
+                    ok_count=ev5.ok_count,
+                    fail_count=ev5.fail_count,
+                    total_ms=ev5.total_ms,
+                )
+            elif etype == "approval_required":
+                ev6 = cast(ApprovalRequiredEvent, event)
+                logger.info(
+                    "approval_required",
+                    session_id=session_id,
+                    user_id=user_id,
+                    tool=ev6.tool_name,
+                    tier=ev6.tier,
+                )
+            elif etype == "approval_decided":
+                ev7 = cast(ApprovalDecidedEvent, event)
+                logger.info(
+                    "approval_decided",
+                    session_id=session_id,
+                    user_id=user_id,
+                    tool=ev7.tool_name,
+                    approved=ev7.approved,
+                )
+            elif etype == "delegate_start":
+                ev8 = cast(DelegateStartEvent, event)
+                logger.info(
+                    "delegate_start",
+                    session_id=session_id,
+                    user_id=user_id,
+                    delegate_id=ev8.delegate_id,
+                    agent=ev8.agent,
+                    task=(ev8.task or "")[:120] or None,
+                )
+            elif etype == "delegate_end":
+                ev9 = cast(DelegateEndEvent, event)
+                logger.info(
+                    "delegate_end",
+                    session_id=session_id,
+                    user_id=user_id,
+                    delegate_id=ev9.delegate_id,
+                    agent=ev9.agent,
+                    ok=ev9.ok,
+                    latency_ms=ev9.latency_ms,
+                    error=(ev9.error or None) if not ev9.ok else None,
+                )
+        except Exception:
+            logger.warning("event_logger_failed", event_type=etype, exc_info=True)
+
+    return _log
 
 
 def current_task_id() -> str:

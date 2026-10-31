@@ -6,10 +6,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchSessionMessages, listSessions, streamSse } from "@/lib/api";
 import type {
   ChatMessage,
+  GraphToolNode,
   PendingApproval,
   SessionInfo,
   SseFrame,
-  ToolTraceItem,
 } from "@/lib/types";
 
 let seq = 0;
@@ -27,7 +27,14 @@ function emptyAssistant(id: string): ChatMessage {
     citations: [],
     memoryCount: 0,
     streaming: true,
-    fanout: undefined,
+    // 发送即创建执行图谱：主 Agent 节点立刻展示，后续委派实时增补子 Agent 节点
+    graph: {
+      status: "running",
+      subAgents: [],
+      okCount: 0,
+      failCount: 0,
+      mainStartedAt: Date.now(),
+    },
   };
 }
 
@@ -40,6 +47,9 @@ export function useChatStream() {
   const [fatalError, setFatalError] = useState("");
   // 当前正在接收流式更新的 assistant 消息 id（approve 续流也复用同一条）
   const activeIdRef = useRef("");
+  // fanout_start 携带的完整子任务描述映射（task_id → task 文案），
+  // fanout_task_start 事件不含 task 字段，靠此补全子 Agent 节点的任务说明
+  const fanoutTasksRef = useRef<Record<string, string>>({});
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -76,59 +86,71 @@ export function useChatStream() {
           case "token":
             return { ...m, content: m.content + frame.delta };
           case "fanout_start":
+            // 并行批次开始：先不画子 Agent 节点，等逐个 FanoutTaskStart 事件到达再实时新增，
+            // 这样「执行链路/耗时不同的子 Agent」会一个接一个冒出来，而不是一次性全出。
+            // 这里仅记录 task_id → task 文案映射，供 fanout_task_start 补全节点说明。
+            fanoutTasksRef.current = Object.fromEntries(
+              frame.tasks.map((t) => [t.task_id, t.task]),
+            );
             return {
               ...m,
-              fanout: {
-                fanoutId: frame.fanout_id,
+              graph: {
                 status: "running" as const,
                 okCount: 0,
                 failCount: 0,
-                tasks: frame.tasks.map((t) => ({
-                  taskId: t.task_id,
-                  agent: t.agent,
-                  task: t.task,
-                  status: "pending" as const,
-                  tools: [],
-                })),
+                mainStartedAt: m.graph?.mainStartedAt,
+                subAgents: m.graph?.subAgents ?? [],
               },
             };
           case "fanout_task_start":
-            return m.fanout
-              ? {
-                  ...m,
-                  fanout: {
-                    ...m.fanout,
-                    tasks: m.fanout.tasks.map((t) =>
-                      t.taskId === frame.task_id ? { ...t, status: "running" as const } : t,
-                    ),
+            // 单个子任务真正开始执行：此刻才新增该子 Agent 节点（逐个实时涌现）
+            return {
+              ...m,
+              graph: {
+                ...(m.graph ?? {
+                  status: "running" as const,
+                  okCount: 0,
+                  failCount: 0,
+                }),
+                subAgents: [
+                  ...(m.graph?.subAgents ?? []),
+                  {
+                    id: frame.task_id,
+                    taskId: frame.task_id,
+                    agent: frame.agent,
+                    task: fanoutTasksRef.current[frame.task_id] ?? "",
+                    status: "running" as const,
+                    startedAt: Date.now(),
+                    tools: [],
                   },
-                }
-              : m;
+                ],
+              },
+            };
           case "fanout_task_end":
-            return m.fanout
+            return m.graph
               ? {
                   ...m,
-                  fanout: {
-                    ...m.fanout,
-                    tasks: m.fanout.tasks.map((t) =>
-                      t.taskId === frame.task_id
+                  graph: {
+                    ...m.graph,
+                    subAgents: m.graph.subAgents.map((n) =>
+                      n.taskId === frame.task_id
                         ? {
-                            ...t,
+                            ...n,
                             status: frame.ok ? ("ok" as const) : ("failed" as const),
                             ms: frame.ms,
                             error: frame.error || undefined,
                           }
-                        : t,
+                        : n,
                     ),
                   },
                 }
               : m;
           case "fanout_end":
-            return m.fanout
+            return m.graph
               ? {
                   ...m,
-                  fanout: {
-                    ...m.fanout,
+                  graph: {
+                    ...m.graph,
                     status: "done" as const,
                     okCount: frame.ok_count,
                     failCount: frame.fail_count,
@@ -136,28 +158,71 @@ export function useChatStream() {
                   },
                 }
               : m;
+          case "delegate_start":
+            return {
+              ...m,
+              graph: {
+                status: "running" as const,
+                okCount: m.graph?.okCount ?? 0,
+                failCount: m.graph?.failCount ?? 0,
+                totalMs: m.graph?.totalMs,
+                mainStartedAt: m.graph?.mainStartedAt,
+                subAgents: [
+                  ...(m.graph?.subAgents ?? []),
+                  {
+                    id: frame.delegate_id,
+                    agent: frame.agent,
+                    task: frame.task,
+                    status: "running" as const,
+                    startedAt: Date.now(),
+                    tools: [],
+                  },
+                ],
+              },
+            };
+          case "delegate_end":
+            return m.graph
+              ? {
+                  ...m,
+                  graph: {
+                    ...m.graph,
+                    okCount: m.graph.okCount + (frame.ok ? 1 : 0),
+                    failCount: m.graph.failCount + (frame.ok ? 0 : 1),
+                    subAgents: m.graph.subAgents.map((n) =>
+                      n.id === frame.delegate_id
+                        ? {
+                            ...n,
+                            status: frame.ok ? ("ok" as const) : ("failed" as const),
+                            ms: frame.ms,
+                            error: frame.error || undefined,
+                          }
+                        : n,
+                    ),
+                  },
+                }
+              : m;
           case "tool_start": {
+            // 委派调度工具（fan_out / delegate_to_*）已在执行图谱中完整表达，不进主工具轨迹
+            const isOrchestrator = frame.tool === "fan_out" || frame.tool.startsWith("delegate_to_");
             // 有 task_id 的工具调用归属到 fan_out 子任务泳道，其余进主轨迹列表
-            if (frame.task_id && m.fanout) {
-              const item: ToolTraceItem = {
+            if (frame.task_id && m.graph) {
+              const item: GraphToolNode = {
                 callId: frame.call_id,
                 tool: frame.tool,
-                tier: frame.tier,
-                origin: frame.origin,
-                args: frame.args,
-                status: "running",
-                taskId: frame.task_id,
+                status: "running" as const,
+                startedAt: Date.now(),
               };
               return {
                 ...m,
-                fanout: {
-                  ...m.fanout,
-                  tasks: m.fanout.tasks.map((t) =>
-                    t.taskId === frame.task_id ? { ...t, tools: [...t.tools, item] } : t,
+                graph: {
+                  ...m.graph,
+                  subAgents: m.graph.subAgents.map((n) =>
+                    n.taskId === frame.task_id ? { ...n, tools: [...n.tools, item] } : n,
                   ),
                 },
               };
             }
+            if (isOrchestrator) return m;
             return {
               ...m,
               tools: [
@@ -175,16 +240,16 @@ export function useChatStream() {
           }
           case "tool_end": {
             // fan_out 子任务内的工具结束：更新对应泳道内的条目
-            if (frame.task_id && m.fanout) {
+            if (frame.task_id && m.graph) {
               return {
                 ...m,
-                fanout: {
-                  ...m.fanout,
-                  tasks: m.fanout.tasks.map((t) =>
-                    t.taskId === frame.task_id
+                graph: {
+                  ...m.graph,
+                  subAgents: m.graph.subAgents.map((n) =>
+                    n.taskId === frame.task_id
                       ? {
-                          ...t,
-                          tools: t.tools.map((it) =>
+                          ...n,
+                          tools: n.tools.map((it) =>
                             it.callId === frame.call_id
                               ? {
                                   ...it,
@@ -195,7 +260,7 @@ export function useChatStream() {
                               : it,
                           ),
                         }
-                      : t,
+                      : n,
                   ),
                 },
               };
@@ -224,7 +289,12 @@ export function useChatStream() {
           case "error":
             return { ...m, error: frame.message, streaming: false };
           case "done":
-            return { ...m, streaming: false };
+            return {
+              ...m,
+              streaming: false,
+              // 收尾：主 Agent 计时定格，图谱整体结束
+              graph: m.graph ? { ...m.graph, status: "done" as const } : m.graph,
+            };
           default:
             return m;
         }
@@ -313,6 +383,8 @@ export function useChatStream() {
             tools: [],
             citations: [],
             memoryCount: 0,
+            // 回填执行链路图谱（完成态快照，供历史渲染）
+            graph: m.graph ?? undefined,
           })),
         );
       } catch (e) {

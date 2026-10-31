@@ -26,7 +26,7 @@ from app.api.deps import get_runtime
 from app.api.routes_chat import error_payload, schedule_post_run, text_of
 from app.api.runtime import AgentRuntime, make_web_approval
 from app.api.schemas import OpenAIChatRequest, OpenAIMessage
-from app.api.sse import SSE_HEADERS
+from app.api.sse import SSE_HEADERS, with_heartbeat
 from app.core.errors import AppError, InputValidationError
 from app.core.events import EventBus
 from app.core.logging import get_logger
@@ -228,7 +228,12 @@ async def chat_completions(
         yield _chunk_frame(completion_id, created, model_name, None, finish="stop")
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(_frames(), media_type="text/event-stream", headers=SSE_HEADERS)
+    # with_heartbeat：空闲期插入 ": ping" 注释帧保活（OpenAI SDK 解析器会忽略注释行）
+    return StreamingResponse(
+        with_heartbeat(_frames()),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
 
 
 __all__ = ["INTERRUPT_NOTICE", "router"]

@@ -44,6 +44,7 @@ from app.core.events import (
     MemoryRecalledEvent,
     ToolEndEvent,
     ToolStartEvent,
+    make_event_logger,
 )
 from app.core.logging import get_logger, setup_logging
 from app.db.engine import Database, build_database
@@ -195,6 +196,11 @@ async def _generate_turn(
     console.print(f"[bold magenta]{assistant_name} ›[/]")
     parts: list[str] = []
     unsubscribe = bus.subscribe(_render_event) if bus is not None else None
+    # 事件日志：工具调用 / 子 Agent 拆分等关键事件落运行日志（每轮订阅，finally 退订）
+    session_id = str((config.get("configurable") or {}).get("thread_id", ""))
+    unsubscribe_event_log = (
+        bus.subscribe(make_event_logger(session_id=session_id)) if bus is not None else None
+    )
     try:
         with Live(
             Text(""),
@@ -214,6 +220,8 @@ async def _generate_turn(
     finally:
         if unsubscribe is not None:
             unsubscribe()
+        if unsubscribe_event_log is not None:
+            unsubscribe_event_log()
     return "".join(parts)
 
 
@@ -476,6 +484,13 @@ async def _chat_loop(
                         ),
                     }
                     config = thread_config(session_id)
+                    # 用户问题入口日志（截断防超长），供排查完整调用链
+                    logger.info(
+                        "chat_request",
+                        session_id=session_id,
+                        user_id=settings.default_user_id,
+                        message=" ".join(text.split())[:200],
+                    )
                     # 本轮开始前的消息快照：用于轮结束后 diff 新增消息写入业务表
                     before_messages: list[Any] = []
                     try:
@@ -596,7 +611,12 @@ def _report_error(error: BaseException) -> None:
 
 def _bootstrap(log_level: str | None, log_json: bool) -> Settings:
     settings = get_settings()
-    setup_logging(log_level or settings.log_level, json_output=log_json or settings.log_json)
+    setup_logging(
+        log_level or settings.log_level,
+        json_output=log_json or settings.log_json,
+        log_dir=settings.log_dir_path,
+        retention_days=settings.log_retention_days,
+    )
     return settings
 
 

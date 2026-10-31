@@ -36,6 +36,9 @@ frontend/next-env.d.ts
 frontend/*.tsbuildinfo
 
 # ============================ 运行时数据 / 本地敏感配置 ============================
+# 日志文件（后端 structlog / 前端启动脚本 tee，保留近 7 天，含本地环境信息不上传）
+log/
+
 # data/ 下的 workspace（文件工具沙箱）与 kb_stub 均为运行时生成/本地数据，不上传；
 # 仅保留 data/kb_stub/chunks.json 作为 stub 示例知识库供参考。
 data/workspace/
@@ -44,6 +47,8 @@ data/kb_stub/*
 
 # 真实配置含本地密码等敏感信息，忽略；仓库里放 config/agent.yaml.example 供参考
 config/agent.yaml
+# mcp.yaml 含 MCP Token 等凭据（如麦当劳 Bearer Token），忽略；模板见 mcp.yaml.example
+config/mcp.yaml
 
 # 环境变量 / 密钥（绝不提交任何真实密钥）
 .env
