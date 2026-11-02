@@ -118,6 +118,15 @@ runtime:
   # ===== 工具依赖的第三方 Key（留空则该工具自动禁用）=====
   tavily_api_key: ""          # 留空回退环境变量 TAVILY_API_KEY
 
+  # ===== Langfuse 可观测（自托管；trace_id 追踪 + Prompt 版本化）=====
+  # enabled       总开关；false 时 Langfuse 完全关闭（优雅降级为 no-op，不影响对话）
+  # host          Langfuse 自托管面板地址（deploy/langfuse 部署，Web 端口 3030）
+  # public/secret_key  项目 API keys（在 Langfuse 面板 Project 设置里获取）
+  langfuse_enabled: false
+  langfuse_host: http://localhost:3030
+  langfuse_public_key: ""
+  langfuse_secret_key: ""
+
 # ============================== 六、多智能体分流（routing） ==============================
 # 对应 backend/app/agents/subagents.py 的 RoutingConfig（原 configs/agents.yaml）。
 #
@@ -197,3 +206,25 @@ routing:
         - calculator
         - get_current_time
       timeout_seconds: 300
+
+# ============================== 七、技能（skills） ==============================
+# 对应 backend/app/skills/（loader.py 读取本段）。
+# Skill = 一个目录一份 SKILL.md（YAML frontmatter + 指南正文），可选携带
+# scripts/*.py 脚本。渐进式披露：system prompt 只注入清单（名称+描述），
+# 模型调用 load_skill 工具才拿到指南全文；脚本经 execute_skill_script
+# （danger 档，每次执行需审批）运行。
+#
+# enabled     总开关；false 时技能不加载、两个工具不装配
+# dir         技能根目录（相对路径按项目根解析），一个技能一个子目录
+# allow_list  白名单；空 = 加载全部，非空 = 只加载列表内技能（其余记为未加载）
+# script.enabled        脚本执行总开关；false 时 execute_skill_script 不装配
+# script.timeout_seconds 单脚本执行超时（秒），超时进程被终止
+# script.max_output_chars stdout/stderr 合计输出上限（超长截断防撑爆上下文）
+skills:
+  enabled: true
+  dir: skills
+  allow_list: []
+  script:
+    enabled: true
+    timeout_seconds: 60
+    max_output_chars: 20000

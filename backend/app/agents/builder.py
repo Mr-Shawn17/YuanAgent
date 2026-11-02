@@ -21,7 +21,10 @@ from langgraph.store.mysql.asyncmy import AsyncMyStore
 
 from app.agents.state import AgentState
 from app.core.config import AgentFileConfig, Settings, get_agent_config, get_settings
+from app.core.logging import get_logger
 from app.llm.factory import get_chat_model
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -76,6 +79,17 @@ def render_system_prompt(
     resolved = config or get_agent_config()
     persona = resolved.persona
     current = now or now_in(persona.timezone)
+    # 优先从 Langfuse 拉取 system prompt（版本化 + label 发布/回滚）；
+    # 拉取/编译失败时回退本地 system.j2，保证对话永不受 Prompt 服务影响。
+    langfuse_rendered = _render_system_prompt_from_langfuse(
+        resolved,
+        session_id=session_id,
+        user_id=user_id,
+        notes=notes,
+        current=current,
+    )
+    if langfuse_rendered is not None:
+        return langfuse_rendered
     return render_prompt(
         "system.j2",
         persona=persona,
@@ -84,6 +98,48 @@ def render_system_prompt(
         user_id=user_id,
         notes=notes.strip(),
     )
+
+
+def _render_system_prompt_from_langfuse(
+    config: AgentFileConfig,
+    *,
+    session_id: str,
+    user_id: str,
+    notes: str,
+    current: datetime,
+) -> str | None:
+    """从 Langfuse 拉取 system prompt（label=production）并编译；失败返回 None（回退本地）。
+
+    Langfuse 文本 prompt 用 Mustache 风格 {{ var }}，不支持 Jinja2 的 {% if %}，
+    故 notes 的「## 补充说明」段在此处由 Python 拼接，模板里只留 {{ notes }} 占位。
+    """
+    try:
+        from app.observability import get_langfuse, is_enabled
+
+        if not is_enabled():
+            return None
+        prompt = get_langfuse().get_prompt("agent-system", label="production", type="text")
+        if prompt is None:
+            return None
+        persona = config.persona
+        notes_block = ""
+        if notes.strip():
+            notes_block = f"\n## 补充说明\n{notes.strip()}"
+        compiled = prompt.compile(
+            name=persona.name,
+            role=persona.role,
+            style=persona.style,
+            boundaries=persona.boundaries,
+            timezone=persona.timezone,
+            language=persona.language,
+            now=current.strftime("%Y-%m-%d %H:%M %A"),
+            session_id=session_id or "未命名",
+            notes=notes_block,
+        )
+        return compiled.strip()
+    except Exception:  # pragma: no cover - 任何异常都回退本地，绝不影响对话
+        logger.warning("langfuse_prompt_render_failed", exc_info=True)
+        return None
 
 
 def append_system_fragment(request: ModelRequest, fragment: str) -> ModelRequest:

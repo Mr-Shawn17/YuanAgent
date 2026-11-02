@@ -36,8 +36,10 @@ from app.memory import MemoryExtractor
 from app.middleware.guardrail import GuardrailMiddleware
 from app.middleware.memory_recall import MemoryRecallMiddleware
 from app.middleware.persona import PersonaMiddleware
+from app.middleware.skill import make_skill_middleware
 from app.middleware.telemetry import TelemetryMiddleware
 from app.middleware.tool_permission import ToolAuditWriter, ToolPermissionMiddleware
+from app.skills import load_skills
 from app.tools.base import ToolContext
 from app.tools.permissions import ApprovalCallback, PermissionTier, ToolCallRequest
 from app.tools.registry import build_tools
@@ -195,12 +197,15 @@ class AgentRuntime:
     ) -> tuple[Any, ToolPermissionMiddleware]:
         """按请求装配一个 agent（中间件顺序与 CLI 完全一致），返回 (agent, 权限中间件)。"""
         user_id = self.user_id
+        # 技能目录：进程级加载一次（启动到重启之间技能集合不变），空目录不装配
+        skill_catalog = load_skills()
         tool_context = ToolContext(
             settings=self.settings,
             user_id=user_id,
             session_id=session_id,
             store=self.store,
             event_bus=event_bus,
+            skill_catalog=skill_catalog,
         )
         registry = build_tools(tool_context)
         registry.tools.extend(self.mcp_tools)
@@ -244,6 +249,7 @@ class AgentRuntime:
             persona_boundaries=persona.boundaries,
         )
         recall_mw = MemoryRecallMiddleware(store=self.store, user_id=user_id, event_bus=event_bus)
+        skill_mw = make_skill_middleware(skill_catalog.records)
         telemetry_mw = TelemetryMiddleware(user_id=user_id, session_id=session_id)
         guardrail_mw = GuardrailMiddleware()
         summarization_mw = SummarizationMiddleware(
@@ -260,6 +266,7 @@ class AgentRuntime:
                 permission_mw,
                 persona_mw,
                 recall_mw,
+                skill_mw,
                 telemetry_mw,
                 guardrail_mw,
                 summarization_mw,

@@ -1,8 +1,24 @@
 # daily-chat-agent 未尽事项清单
 
-> 更新：2026-10-26 ｜ 来源：`docs/architecture.md` §14「现状差异清单」+ 源码逐项实查
+> 更新：2026-11-01 ｜ 来源：`docs/architecture.md` §14「现状差异清单」+ 源码逐项实查
 > 说明：本清单记录「已定义/已预留，但当前未接线或未强制执行」的演进空间，均为有意保留，**不是 bug**。
 > 每条标注对应代码/配置位置，便于逐条推进。
+
+---
+
+## 〇、Skills 技能系统（2026-11-01 已落地）
+
+| 项 | 状态 |
+| --- | --- |
+| 知识型技能（SKILL.md + 渐进式披露 + load_skill 工具） | ✅ `backend/app/skills/`（schema / loader）+ `middleware/skill.py` + `tools/builtin/skill.py` |
+| 脚本执行（execute_skill_script，danger 档首个成员） | ✅ `backend/app/skills/runner.py`：路径钉死 + 白名单 + 独立进程超时 + 输出封顶 |
+| 配置段 | ✅ `config/agent.yaml` 第七段 `skills`（总开关/目录/白名单/脚本约束） |
+| CLI 管理 | ✅ `/skills` 斜杠命令 + 启动头部技能清单 |
+| 示例技能 | ✅ `skills/weekly-report/`（含 gen_skeleton.py 脚本） |
+| 测试 | ✅ `tests/unit/test_skills.py`（31 用例：解析/扫描/工具/沙箱/中间件/装配） |
+| 遗留 | ⚠️ 脚本沙箱为「审批 + 超时 + 输出封顶」多层防护，非容器级隔离；多用户场景需升级 |
+
+> 原 §二 第 2 项（danger 档空占位）已闭环：`execute_skill_script` 成为 danger 档首个成员，复用现有审批链路。
 
 ---
 
@@ -26,10 +42,10 @@
 
 - 涉及：`backend/app/agents/state.py`（tool_budget）、`backend/app/middleware/tool_permission.py`（应读取校验）
 
-### 2. `danger` 档位空占位
-三档权限里 `danger` 档当前无任何工具成员，仅预留更醒目的审批提示。未来引入删除/发送/扣费等不可逆工具时需真正启用。
+### 2. `danger` 档位空占位（已闭环）
+~~三档权限里 `danger` 档当前无任何工具成员。~~ 2026-11-01 起 `execute_skill_script`（技能脚本执行）成为 danger 档首个成员，复用现有审批链路（更醒目提示 + 强制确认 + 审计）。
 
-- 涉及：`backend/app/tools/permissions.py`
+- 涉及：`backend/app/tools/permissions.py`、`backend/app/tools/builtin/skill.py`
 
 ### 3. 业务表 `messages` 写入路径单一
 对话正文权威副本在 LangGraph `checkpoints`，业务表 `messages` 主要靠审计触发写入，CLI 路径下无显式 `SessionRepo.add_message()`。业务表完整消息流水与 checkpoint 存在信息差。
