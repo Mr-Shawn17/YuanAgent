@@ -130,6 +130,12 @@ class Settings(BaseModel):
     mysql_max_overflow: int = Field(default=10, ge=0, le=128)
     mysql_echo: bool = False
 
+    # ===== Langfuse 可观测（自托管；留空/关闭则优雅降级为 no-op，不影响对话）=====
+    langfuse_enabled: bool = False
+    langfuse_host: str = "http://localhost:3030"
+    langfuse_public_key: SecretStr = SecretStr("")
+    langfuse_secret_key: SecretStr = SecretStr("")
+
     kb_mode: str = "stub"
     kb_collection: str = "agent_knowledge"
     kb_stub_data: Path = PROJECT_ROOT / "data" / "kb_stub" / "chunks.json"

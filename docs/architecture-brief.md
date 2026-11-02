@@ -102,6 +102,7 @@ Multi_Agent/
 │   │   ├── tool_permission.py    #   ★ 判档 → 审批 → 审计 → 工具事件
 │   │   ├── persona.py            #   人设周期性强化
 │   │   ├── memory_recall.py      #   长期记忆召回注入
+│   │   ├── skill.py              #   技能清单注入（渐进式披露）
 │   │   ├── telemetry.py          #   模型调用打点（延迟/token/失败）
 │   │   ├── guardrail.py          #   外部内容防注入包裹
 │   │   └── (SummarizationMiddleware 为框架内置，第 6 个)
@@ -113,6 +114,10 @@ Multi_Agent/
 │   │   ├── config.py             #   mcp.yaml 解析
 │   │   ├── manager.py            #   连接管理、命名空间化（<server>__<tool>）
 │   │   └── policy.py             #   档位继承与白名单
+│   ├── skills/                  # 技能系统（2026-11）
+│   │   ├── schema.py             #   frontmatter 契约 + 配置段
+│   │   ├── loader.py             #   启动扫描 skills/ 目录
+│   │   └── runner.py             #   脚本执行沙箱（路径钉死+超时+输出封顶）
 │   ├── rag/
 │   │   ├── schema.py             #   KnowledgeChunk 契约（10 字段，stub/mcp 共用）
 │   │   ├── kb_tool.py            #   stub 模式工具工厂（mcp 模式返回 None 让位）
@@ -398,6 +403,7 @@ scripts/rag/seed_agent_knowledge.py
 | 1 | `ToolPermissionMiddleware` | `awrap_tool_call` | 判档 → 审批 → 审计 → 工具事件 | 拒绝时改 ToolMessage |
 | 2 | `PersonaMiddleware` | `awrap_model_call` | 对话轮数 ≥ 阈值时把人设提醒追加进 system prompt | 改 system_message |
 | 3 | `MemoryRecallMiddleware` | `awrap_model_call` | 召回长期记忆追加进 system prompt，发事件 | 改 system_message |
+| 3.5 | `SkillMiddleware` | `awrap_model_call` | 注入技能清单（渐进式披露前半段，空清单透传） | 改 system_message |
 | 4 | `TelemetryMiddleware` | `awrap_model_call` | 记录延迟、token 用量、失败告警 | 只观测不改写 |
 | 5 | `GuardrailMiddleware` | `awrap_tool_call` | 外部内容包进 `<external_content>` + 防注入提示 | 改 ToolMessage.content |
 | 6 | `SummarizationMiddleware` | 框架内置 | 上下文超 12000 tokens 时摘要旧消息，保留最近 20 条 | 改 messages |

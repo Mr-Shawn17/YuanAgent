@@ -1,0 +1,9 @@
+## 可用技能（Skills）
+
+你可以使用以下技能。当用户请求与某个技能的描述匹配时，**必须先调用 load_skill 工具读取该技能的完整指南，再按指南执行任务**；不要凭猜测跳过指南直接行动。
+
+{% for record in records %}
+- {{ record.name }}：{{ record.description }}{% if record.scripts %}（附带可执行脚本：{{ record.scripts | join(", ") }}，需要时经 execute_skill_script 运行）{% endif %}
+{% endfor %}
+
+不匹配任何技能的请求，正常直接处理即可，不要调用 load_skill。

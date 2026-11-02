@@ -1,3 +1,4 @@
+# ruff: noqa: E402  # 本文件有硬性 import 顺序约束（假 utils 注入必须先于 import retrieve）
 """混合检索 MCP 服务（Agent 解耦接入，计划 §P3'）。
 
 职责：把 ``D:\\VSCodeProject\\混合检索RAG`` 的检索能力经 MCP over streamable-http
@@ -69,11 +70,11 @@ def _install_console_log_patch() -> None:
 
 _install_console_log_patch()
 
-import retrieve  # noqa: E402  必须最先！其内部保证 FlagEmbedding 链顺序
+import retrieve  # 必须最先！其内部保证 FlagEmbedding 链顺序
 
 idx = retrieve.idx
 
-from fastmcp import FastMCP  # noqa: E402
+from fastmcp import FastMCP
 
 logger = logging.getLogger("rag.serve_mcp")
 
@@ -130,6 +131,39 @@ def _patch_rerank_cast_to() -> None:
 
 
 _patch_rerank_cast_to()
+
+# ── Langfuse 可观测：给检索打 span（与主 Agent 跨进程关联，见注释）──
+# 本服务是独立进程，trace 通过 session_id 与主 Agent 的对话会话关联，
+# 使 Langfuse 面板能按 session 回放「主 Agent 对话 → 触发 RAG 检索」的完整链路。
+# 复用 Agent 仓库的 app.observability（读 config/agent.yaml 的 langfuse 段）；
+# 未启用时优雅降级为 no-op，不影响检索功能。
+_AGENT_BACKEND = Path(__file__).resolve().parents[2] / "backend"
+if str(_AGENT_BACKEND) not in sys.path:
+    sys.path.insert(0, str(_AGENT_BACKEND))
+
+try:
+    from langfuse import observe
+
+    from app.observability import get_langfuse as _get_langfuse  # 初始化全局客户端用
+
+    _LANGFUSE_AVAILABLE = True
+except Exception:  # pragma: no cover - langfuse 未安装时降级
+    _LANGFUSE_AVAILABLE = False
+
+    def observe(func=None, **kwargs):  # type: ignore[no-redef]
+        if func is None:
+            return lambda f: f
+        return func
+
+
+def _init_langfuse() -> None:
+    """显式初始化 Langfuse 全局客户端（读 agent.yaml 配置），使 @observe 能复用。"""
+    if _LANGFUSE_AVAILABLE:
+        try:
+            _get_langfuse()
+        except Exception:  # pragma: no cover - 失败静默降级
+            pass
+
 
 DEFAULT_COLLECTION = os.environ.get("KB_COLLECTION", "agent_knowledge").strip() or "agent_knowledge"
 HOST = os.environ.get("RAG_MCP_HOST", "127.0.0.1")
@@ -198,6 +232,7 @@ mcp = FastMCP(
 
 
 @mcp.tool
+@observe(name="rag_retrieve", as_type="retriever", capture_input=True, capture_output=True)
 def search_knowledge_base(
     query: str, top_k: int = 5, collection: str = DEFAULT_COLLECTION
 ) -> list[dict]:
@@ -229,6 +264,7 @@ def search_knowledge_base(
 
 def warmup() -> None:
     """构造默认 Retriever + 哑编码（不发真查询，省 rerank API 配额）；失败只告警。"""
+    _init_langfuse()
     try:
         r = get_retriever(DEFAULT_COLLECTION)
         r._encode("预热")

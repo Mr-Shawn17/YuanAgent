@@ -14,6 +14,7 @@ from pydantic import BaseModel, field_validator
 from app.core.config import Settings
 from app.core.errors import AppError, PermissionDeniedError
 from app.core.events import EventBus
+from app.skills.schema import SkillCatalog
 from app.tools.permissions import PERMISSION_TIERS, PermissionTier
 
 # 单个工具读取/写入的默认上限，防止超长内容撑爆上下文窗口
@@ -52,6 +53,8 @@ class ToolContext:
     sandbox_root: Path | None = None
     # 工具内部主动发布事件（如知识库引用），None 表示不发布
     event_bus: EventBus | None = None
+    # 技能目录（skills 功能开启时由装配方注入，skill 工具据此装配/禁用）
+    skill_catalog: SkillCatalog | None = None
 
     def sandbox(self) -> Path:
         """文件类工具的沙箱根目录（绝对路径）。"""

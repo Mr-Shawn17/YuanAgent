@@ -40,6 +40,7 @@ from app.db.message_sync import persist_new_messages
 from app.db.models import ROLE_ASSISTANT, ROLE_USER
 from app.db.session_repo import SessionRepo
 from app.middleware.telemetry import usage_of
+from app.observability import make_callbacks
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -233,6 +234,11 @@ async def _stream_run(
         approval=make_web_approval(),
     )
     config = thread_config(session_id)
+    # Langfuse 可观测：把 CallbackHandler 挂到 config.callbacks，整条链自动捕获为嵌套 trace。
+    # 未启用时 make_callbacks 返回空列表，等价于无观测，不影响现有执行图谱/日志行为。
+    langfuse_callbacks = make_callbacks(session_id=session_id, user_id=user_id)
+    if langfuse_callbacks:
+        config = {**config, "callbacks": langfuse_callbacks}
 
     session_frame: dict[str, Any] = {"type": "session", "session_id": session_id}
     if title:

@@ -56,8 +56,11 @@ from app.memory import MemoryExtractor
 from app.middleware.guardrail import GuardrailMiddleware
 from app.middleware.memory_recall import MemoryRecallMiddleware
 from app.middleware.persona import PersonaMiddleware
+from app.middleware.skill import make_skill_middleware
 from app.middleware.telemetry import TelemetryMiddleware
 from app.middleware.tool_permission import ToolAuditWriter, ToolPermissionMiddleware
+from app.observability import make_callbacks
+from app.skills import SkillCatalog, load_skills
 from app.tools.base import ToolContext
 from app.tools.permissions import ToolCallRequest
 from app.tools.registry import build_tools
@@ -78,6 +81,7 @@ SLASH_HELP = """可用斜杠命令：
   /sessions       列出历史会话（可恢复）
   /use <id前缀>   切换到指定会话
   /model          显示当前模型配置
+  /skills         列出已加载的技能（Skills）
   /help           显示本帮助
   /exit           退出
 Ctrl+C：生成过程中中断本轮，输入过程中退出程序。"""
@@ -346,12 +350,15 @@ async def _chat_loop(
             fast_model = get_chat_model("fast", settings=settings, streaming=False)
             bus = EventBus()
             user_id = settings.default_user_id
+            # 技能目录：进程级加载一次，空目录不装配（功能静默关闭）
+            skill_catalog = load_skills()
             tool_context = ToolContext(
                 settings=settings,
                 user_id=user_id,
                 session_id=session_id,
                 store=store,
                 event_bus=bus,
+                skill_catalog=skill_catalog,
             )
             registry = build_tools(tool_context)
             # MCP 工具并入注册表：命名空间前缀与档位已在 McpManager 内处理
@@ -394,6 +401,7 @@ async def _chat_loop(
                 persona_boundaries=persona.boundaries,
             )
             recall_mw = MemoryRecallMiddleware(store=store, user_id=user_id, event_bus=bus)
+            skill_mw = make_skill_middleware(skill_catalog.records)
             telemetry_mw = TelemetryMiddleware(user_id=user_id)
             guardrail_mw = GuardrailMiddleware()
             summarization_mw = SummarizationMiddleware(
@@ -413,6 +421,7 @@ async def _chat_loop(
                     permission_mw,
                     persona_mw,
                     recall_mw,
+                    skill_mw,
                     telemetry_mw,
                     guardrail_mw,
                     summarization_mw,
@@ -440,6 +449,13 @@ async def _chat_loop(
                     for name, tools in routing.sub_agent_tools.items()
                 )
                 header += f"\n[dim]子 Agent：{summary}[/]"
+            if skill_catalog.records:
+                header += f"\n[dim]技能：{', '.join(skill_catalog.names)}[/]"
+            if skill_catalog.disabled:
+                header += (
+                    f"\n[dim]技能未加载：{', '.join(sorted(skill_catalog.disabled))}"
+                    "（/skills 查看原因）[/]"
+                )
             if mcp_manager.connected:
                 header += f"\n[dim]MCP 已连接：{', '.join(mcp_manager.connected)}[/]"
             if mcp_manager.failed:
@@ -468,6 +484,7 @@ async def _chat_loop(
                             checkpointer=checkpointer,
                             settings=settings,
                             session_id=session_id,
+                            skill_catalog=skill_catalog,
                         )
                         if action.get("exit"):
                             break
@@ -484,6 +501,11 @@ async def _chat_loop(
                         ),
                     }
                     config = thread_config(session_id)
+                    langfuse_callbacks = make_callbacks(
+                        session_id=session_id, user_id=settings.default_user_id
+                    )
+                    if langfuse_callbacks:
+                        config = {**config, "callbacks": langfuse_callbacks}
                     # 用户问题入口日志（截断防超长），供排查完整调用链
                     logger.info(
                         "chat_request",
@@ -550,6 +572,7 @@ async def _handle_slash(
     checkpointer: Any,
     settings: Settings,
     session_id: str,
+    skill_catalog: SkillCatalog | None = None,
 ) -> dict[str, Any]:
     parts = text[1:].split(maxsplit=1)
     command = parts[0].lower() if parts else ""
@@ -588,8 +611,32 @@ async def _handle_slash(
             f"备用   [cyan]{settings.profile_for('fallback').model or '(未配置)'}[/]"
         )
         return {}
+    if command == "skills":
+        _render_skills(skill_catalog)
+        return {}
     console.print(f"[red]未知命令：/{command}[/]\n[dim]{SLASH_HELP}[/]")
     return {}
+
+
+def _render_skills(catalog: SkillCatalog | None) -> None:
+    """渲染技能清单：名称 / 描述 / 脚本 / 禁用原因（与 /sessions 风格一致）。"""
+    if catalog is None:
+        console.print("[dim]技能功能未启用（config/agent.yaml 的 skills 段）[/]")
+        return
+    if not catalog.records and not catalog.disabled:
+        console.print("[dim]没有已加载的技能（skills/ 目录为空，加目录即生效）[/]")
+        return
+    if catalog.records:
+        table = Table(title="已加载技能", show_lines=False, expand=True)
+        table.add_column("技能", style="cyan", no_wrap=True)
+        table.add_column("描述")
+        table.add_column("脚本", style="dim")
+        for record in catalog.records:
+            scripts = "、".join(record.scripts) if record.scripts else "-"
+            table.add_row(record.name, record.description, scripts)
+        console.print(table)
+    for name, reason in sorted(catalog.disabled.items()):
+        console.print(f"[yellow]未加载[/] {name}：{reason}")
 
 
 def _report_error(error: BaseException) -> None:

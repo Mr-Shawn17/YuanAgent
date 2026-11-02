@@ -41,6 +41,7 @@
 | 🔐 **三档权限 + 人工审批**       | 工具按 `read / write / danger` 分档：`write` 及以上执行前必须经用户确认（CLI 终端询问 / Web 弹窗阻断），所有调用无条件写审计表，模型无法静默「动手」                        |
 | 🧩 **MCP 生态即插即用**        | 任意第三方 MCP Server 只需在 `config/mcp.yaml` 加一段配置即可接入（stdio / streamable-http 双传输），不改一行代码                                    |
 | 🤖 **子 Agent 分流 + 并行委派** | 主 Agent 只做路由与汇总：调研任务委派 `research`、写文件委派 `coding`；多对象对比类问题自动 `fan_out` 并行拆分执行                                            |
+| 🧰 **技能 Skills**          | 一目录一技能（SKILL.md 指南 + 可选脚本）：清单渐进式披露不撑上下文，脚本执行走 danger 档强制审批——加目录即生效，CLI `/skills` 可查                       |
 | 📚 **RAG 与 Agent 解耦**    | 真实检索由独立 RAG 服务经 MCP 提供（Qdrant 混合检索），主项目只认一个 10 字段的 `KnowledgeChunk` 契约，无 Qdrant 也能用 stub 模式跑通全链路                        |
 | 🧠 **长期记忆**              | 说「请记住……」即写入记忆，跨会话可召回；长对话自动摘要压缩；记忆抽取放后台不阻塞回复                                                                             |
 | 💬 **双入口 + OpenAI 兼容**   | CLI 终端（Typer + Rich 打字机）与 Web 界面（SSE 流式 / 工具轨迹 / 引用卡片 / 审批弹窗 / 执行链路图）；另暴露 `/v1/chat/completions` 兼容端点，任何 OpenAI SDK 可直连 |
@@ -49,6 +50,7 @@
 
 - **流式对话**：CLI 打字机效果，或 Web 界面 SSE 逐字输出，底部显示 token 用量
 - **工具调用**：时间、计算器（SymPy 精确计算）、联网搜索（Tavily）、沙箱文件读写、知识库检索等内置工具，外加 MCP 协议第三方工具
+- **技能（Skills）**：`skills/` 目录放 SKILL.md 即可教 Agent 按固定流程做事（渐进式披露）；技能可带脚本，经 danger 档审批后执行
 - **RAG 知识库问答**：检索命中后回答带 `[1] [2]` 引用编号，Web 端渲染可展开的引用卡片
 - **长期记忆**：跨会话记住你的偏好与事实（如生日），自动抽取 + 合并
 - **会话持久化**：全部会话、消息、审计、记忆落在 MySQL，随时恢复历史会话
@@ -165,7 +167,9 @@ python -m app.cli config   # 查看当前生效配置（密钥已脱敏）
 python -m app.cli chat     # 进入终端聊天
 ```
 
-CLI 会话内斜杠命令：`/new` 新建会话 ｜ `/sessions` 列出历史 ｜ `/use <id前缀>` 切换会话 ｜ `/model` 模型配置 ｜ `/exit` 退出。
+CLI 会话内斜杠命令：`/new` 新建会话 ｜ `/sessions` 列出历史 ｜ `/use <id前缀>` 切换会话 ｜ `/model` 模型配置 ｜ `/skills` 已加载技能 ｜ `/exit` 退出。
+
+想试技能：对阿元说一句帮我写本周周报，它会先 `load_skill` 读 `skills/weekly-report/` 的指南，再按流程收集内容；跑脚本时终端会先问一次是否允许。往 `skills/` 放新目录、重启后自动生效，完整说明见 [docs/usage.md §8](./docs/usage.md#8-技能-skills教-agent-按你的流程做事)。
 
 ### 6. 启动 Web 界面（可选）
 
@@ -185,7 +189,7 @@ cd frontend && npm install && npm run dev
 
 | 文件                  | 管什么                                                                                                                                                |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config/agent.yaml` | 六段：`persona`（人设）/ `limits`（熔断限额）/ `history`（摘要阈值）/ `server`（端口与 Python 环境）/ `runtime`（模型、MySQL、密钥环境变量名等，原 .env 内容）/ `routing`（子 Agent 分流与 fan_out） |
+| `config/agent.yaml` | 七段：`persona`（人设）/ `limits`（熔断限额）/ `history`（摘要阈值）/ `server`（端口与 Python 环境）/ `runtime`（模型、MySQL、密钥环境变量名等，原 .env 内容）/ `routing`（子 Agent 分流与 fan_out）/ `skills`（技能目录、白名单、脚本执行约束） |
 | `config/tools.yaml` | 工具白名单（默认全禁用）、每个工具的权限档位、文件工具沙箱根目录、KB stub/mcp 开关                                                                                                    |
 | `config/mcp.yaml`   | MCP Server 清单：transport、权限档位继承、工具白名单、超时；接新 Server 只加一段配置                                                                                           |
 
@@ -193,9 +197,9 @@ cd frontend && npm install && npm run dev
 
 | 档位       | 行为            | 成员示例                                                    |
 | -------- | ------------- | ------------------------------------------------------- |
-| `read`   | 直接执行，仅审计      | 时间、计算器、联网搜索、读文件、知识库检索、全部 MCP 工具、`delegate_to_research`  |
+| `read`   | 直接执行，仅审计      | 时间、计算器、联网搜索、读文件、知识库检索、`load_skill`、全部 MCP 工具、`delegate_to_research`  |
 | `write`  | 执行前需审批        | `write_file`、`remember`、`delegate_to_coding`（批准一次即整体授权） |
-| `danger` | 执行前需审批（更醒目提示） | 预留档位                                                    |
+| `danger` | 执行前需审批（更醒目提示） | `execute_skill_script`（技能脚本执行）                      |
 
 ## HTTP API
 
@@ -252,6 +256,7 @@ YuanAgent/
 │   ├── db/               #   ORM / 引擎 / 仓储
 │   └── core/             #   配置 / 事件总线 / 日志脱敏 / 错误层级
 ├── frontend/             # Next.js 15 前端
+├── skills/               # 技能目录（SKILL.md + 可选脚本，加目录即生效）
 ├── config/               # agent.yaml(.example) / tools.yaml / mcp.yaml
 ├── scripts/              # init_mysql / start_backend / start_frontend / rag/ / verify_*
 ├── data/                 # kb_stub 示例语料 + workspace 文件沙箱
@@ -263,7 +268,7 @@ YuanAgent/
 
 | 文档                                                         | 内容                                            |
 | ---------------------------------------------------------- | --------------------------------------------- |
-| [docs/usage.md](./docs/usage.md)                           | 使用手册：安装配置 → CLI / Web → RAG 接入 → 子 Agent → 排错 |
+| [docs/usage.md](./docs/usage.md)                           | 使用手册：安装配置 → CLI / Web → RAG 接入 → 子 Agent → 技能 Skills → Langfuse 可观测 → 排错 |
 | [docs/architecture.md](./docs/architecture.md)             | 架构详解：逐文件讲解、流水线、安全矩阵、设计契约                      |
 | [docs/architecture-brief.md](./docs/architecture-brief.md) | 架构速览：10-20 分钟读懂全貌                             |
 | [docs/design.md](./docs/design.md)                         | 设计规范                                          |
@@ -278,8 +283,9 @@ YuanAgent/
 - [x] messages 业务表完整写入（与 checkpoint 闭合）
 - [x] 容器化部署（backend / frontend / MySQL 编排）
 - [x] fan_out 并行子 Agent 委派 + 前端执行链路图
+- [x] 观测接入 Langfuse（带 trace_id 的跨进程追踪 + Prompt 版本化）
 - [ ] 记忆生命周期管理（过期 / 删除 / 清空入口）
-- [ ] 观测升级（metrics 导出 / 成本聚合看板 / tracing）
+- [ ] 观测升级（metrics 导出 / 成本聚合看板）
 
 ## 常见问题
 

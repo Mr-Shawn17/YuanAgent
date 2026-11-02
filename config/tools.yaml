@@ -50,3 +50,16 @@ tools:
     enabled: false
     tier: read
     mode: stub
+
+  # ===== 技能（Skills）=====
+  # 依赖装配方注入 ToolContext.skill_catalog：skills 功能关闭或目录为空时
+  # 工厂返回 None，registry 记禁用原因（不报错）。技能目录见 config/agent.yaml
+  # 的 skills 段；SKILL.md 格式与脚本约束见 docs/usage.md。
+  load_skill:
+    enabled: true
+    tier: read
+
+  # danger 档首个成员：每次执行必须用户审批（终端询问 / Web 弹窗）
+  execute_skill_script:
+    enabled: true
+    tier: danger

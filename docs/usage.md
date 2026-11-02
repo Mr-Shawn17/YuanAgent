@@ -15,11 +15,13 @@
 5. [使用 Web 界面](#5-使用-web-界面)
 6. [接入 RAG 知识库](#6-接入-rag-知识库)
 7. [子 Agent 分流与 fan_out 并行](#7-子-agent-分流与-fan_out-并行)
-8. [配置参考](#8-配置参考)
-9. [HTTP API 速览](#9-http-api-速览)
-10. [测试与质量门禁](#10-测试与质量门禁)
-11. [常见问题](#11-常见问题)
-12. [目录速查](#12-目录速查)
+8. [技能 Skills：教 Agent 按你的流程做事](#8-技能-skills教-agent-按你的流程做事)
+9. [配置参考](#9-配置参考)
+10. [HTTP API 速览](#10-http-api-速览)
+11. [测试与质量门禁](#11-测试与质量门禁)
+12. [Langfuse 可观测（trace 追踪 + Prompt 版本化）](#12-langfuse-可观测trace-追踪--prompt-版本化)
+13. [常见问题](#13-常见问题)
+14. [目录速查](#14-目录速查)
 
 ---
 
@@ -228,17 +230,6 @@ cd frontend && npm run dev
 
 等价于 `make web`。浏览器打开 `http://localhost:3000`。
 
-### 5.4 服务日志（文件）
-
-前后端日志均落盘到项目根 `log/` 目录（已被 gitignore），按天一文件，仅保留近 7 天（启动时自动清理过期文件）：
-
-| 文件 | 内容 | 采集方式 |
-| --- | --- | --- |
-| `log/backend-YYYY-MM-DD.log` | 后端全部运行日志（API / MCP / 审计 / 异常堆栈），与终端同链路、密钥自动脱敏 | structlog 文件 handler |
-| `log/frontend-YYYY-MM-DD.log` | 前端 npm 子进程全部输出（编译状态 / 请求报错 / 堆栈），每次启动追加带时间戳分节 | 启动脚本 tee 捕获 |
-
-可调配置（`config/agent.yaml` 的 runtime 段）：`log_dir`（默认 `log`）与 `log_retention_days`（默认 7，设 0 为永久保留）。
-
 ### 5.3 界面功能
 
 - **左侧会话列表**：点击「＋ 新对话」开新会话；历史会话显示标题、时间与消息数，点击即恢复。
@@ -249,6 +240,17 @@ cd frontend && npm run dev
 - **执行链路图**：`fan_out` 并行委派时渲染主 Agent → 并行子任务泳道 → 汇总节点的可视化卡片。
 
 预期结果（可自测的四项验收）：流式输出无卡顿；工具轨迹可展开；引用卡片可点开看全文；发送「请记住：我的生日是 3 月 12 日。」会弹审批窗，拒绝后工具不执行、允许后轨迹显示「完成」且回复确认已记住。
+
+### 5.4 服务日志（文件）
+
+前后端日志均落盘到项目根 `log/` 目录（已被 gitignore），按天一文件，仅保留近 7 天（启动时自动清理过期文件）：
+
+| 文件 | 内容 | 采集方式 |
+| --- | --- | --- |
+| `log/backend-YYYY-MM-DD.log` | 后端全部运行日志（API / MCP / 审计 / 异常堆栈），与终端同链路、密钥自动脱敏 | structlog 文件 handler |
+| `log/frontend-YYYY-MM-DD.log` | 前端 npm 子进程全部输出（编译状态 / 请求报错 / 堆栈），每次启动追加带时间戳分节 | 启动脚本 tee 捕获 |
+
+可调配置（`config/agent.yaml` 的 runtime 段）：`log_dir`（默认 `log`）与 `log_retention_days`（默认 7，设 0 为永久保留）。
 
 ---
 
@@ -328,11 +330,161 @@ python scripts/verify_p6_subagents.py
 
 ---
 
-## 8. 配置参考
+## 8. 技能 Skills：教 Agent 按你的流程做事
+
+Skill = 一包可插拔的领域操作指南：一个目录、一份 `SKILL.md`（YAML frontmatter + markdown 指南正文），可选携带模板资源与 Python 脚本。Agent 平时只在系统提示里看到技能清单（名称 + 一行描述），任务匹配时才调 `load_skill` 读指南全文，再按指南组合现有工具执行。这套做法叫**渐进式披露**，好处是技能再多也不撑爆上下文。
+
+### 8.1 用起来：加目录 → 重启 → 说一句话
+
+三步，不用写任何代码：
+
+1. 技能目录放进 `skills/`，一个技能一个子目录，里面至少一份 `SKILL.md`
+2. 重启 CLI 或后端。技能只在启动时扫描一次，暂不支持热加载
+3. 正常聊天，用自然语言提任务。要不要加载由 Agent 自己判断，判断依据就是 `SKILL.md` 里的 `description`
+
+先确认加载状态。CLI 里输入 `/skills`：
+
+```text
+> /skills
+技能            描述                              脚本
+weekly-report   撰写周报的流程指南。当用户提到…    gen_skeleton.py
+
+未加载 draft-helper：解析失败：缺少 frontmatter
+```
+
+表里是已加载的技能，没进表的会在下面逐条列出原因。
+
+然后是实际对话。以仓库自带的周报技能为例，一轮完整交互长这样：
+
+```text
+你 > 帮我写本周周报，这周主要在搞技能功能
+
+阿元 > load_skill(skill_name='weekly-report')        ← read 档，不打断你
+       今天是 2026-11-02 周一，本周范围 10-26 至 11-01。先按这个范围整理：
+       本周完成：
+       - 技能功能：跑通渐进式披露与脚本执行，单测全绿
+       ...
+       内容和范围确认后我生成骨架并写入文件。
+
+你 > 内容没问题，生成吧
+
+阿元 > [工具执行确认] execute_skill_script · 危险操作
+       execute_skill_script(skill_name='weekly-report', script_name='gen_skeleton.py', …)
+       允许执行吗？[y/N]
+你 > y
+
+阿元 > 骨架已生成：D:\...\skills\weekly-report\scripts\weekly_report.md（10-26 ~ 11-01），
+       我接着按你口述的内容填充。
+```
+
+两个工具在体验上的区别就一句话：`load_skill` 是 read 档，读指南不打断你；`execute_skill_script` 是 danger 档，每次跑脚本都要你点头。Web 界面上对应的是审批弹窗，和 CLI 共用同一套权限中间件，所以审批记录、`tool_audit` 审计、工具轨迹面板两边一致。
+
+脚本的工作目录是它自身所在的 `scripts/` 目录，所以 `--output` 传相对路径时文件落在 `scripts/` 下；脚本会打印解析后的绝对路径，想写到别处直接传绝对路径。
+
+### 8.2 触发不生效怎么查
+
+按下面顺序排查，绝大多数问题在第一步就能看到：
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `/skills` 里没有这个技能 | frontmatter 写错、缺 `---` 分隔符、`name` 与目录名不一致 | 看 `/skills` 下面的未加载原因，按提示改 |
+| 同上，但原因是被白名单挡住 | `skills.allow_list` 非空且不含该技能 | 加进白名单，或把 `allow_list` 置空 |
+| 已加载但 Agent 不调用 | `description` 没写清触发场景 | `description` 是模型路由的唯一依据，把用户可能说的说法写进去 |
+| 脚本拒绝执行 | 脚本不在 `scripts/` 内，或不在 `allowed_scripts` 白名单里 | 移到 `scripts/` 下，或补白名单 |
+| 脚本超时被杀 | 单次执行超过 `timeout_seconds`（默认 60s） | 拆小脚本，或在 frontmatter 里调 `script_timeout` |
+| 输出被截断 | stdout/stderr 合计超过 `max_output_chars`（默认 20000） | 脚本自己写文件，只往 stdout 打摘要 |
+
+### 8.3 写一份自己的技能
+
+```text
+skills/
+└── weekly-report/            # 技能名 = 目录名
+    ├── SKILL.md              # 必需：frontmatter + 指南正文
+    ├── template.md.j2        # 可选：静态资源（指南内相对引用）
+    └── scripts/
+        └── gen_skeleton.py   # 可选：可执行脚本（白名单约束）
+```
+
+frontmatter 字段：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `name` | 是 | 必须与目录名一致，小写字母、数字、连字符、下划线 |
+| `description` | 是 | 一句话说清这个技能干什么、什么时候用。模型靠它决定要不要加载，写清用户可能说的说法 |
+| `allowed_scripts` | 否 | 脚本白名单；不写等于 `scripts/` 下全部 `.py` 都允许 |
+| `script_timeout` | 否 | 本技能脚本的单次超时（秒），覆盖全局默认值 |
+
+一份最小可用的 `SKILL.md`：
+
+```markdown
+---
+name: weekly-report
+description: 撰写周报的流程指南。当用户提到"周报/本周总结/写周报/汇报本周进展"等时使用。
+---
+# 周报撰写指南
+
+1. 用 `get_current_time` 确认今天日期，算出本周的周一到周日
+2. 询问用户本周做了什么，没提到的一律不编造
+3. 按模板组织内容，用 `write_file` 写入沙箱
+```
+
+写指南的经验：
+
+- **写成流程，不要写百科**。Agent 需要的是先做什么、再做什么、什么情况停下来问用户，领域知识的堆砌反而挤占上下文
+- **点名可用工具**。直接写调用 `get_current_time` 或 `write_file`，比让模型自己猜更稳
+- **写清边界**。比如用户说简单点时省略哪些小节，比事后返工省事
+- **脚本能省则省**。能用现有工具组合完成的就别写脚本，脚本每跑一次都要过审批，打断节奏
+
+指南正文里引用脚本时，参数名就是工具的真实参数名：
+
+```text
+execute_skill_script(skill_name="weekly-report", script_name="gen_skeleton.py",
+                     script_args="--week 2026-W44 --output weekly_report.md")
+```
+
+写完重启一次，用 `/skills` 确认加载成功，再用一句自然语言试触发。仓库自带的 `skills/weekly-report/` 是完整范本，照着抄结构最快。
+
+### 8.4 两个内置工具与权限
+
+| 工具 | 档位 | 行为 |
+| --- | --- | --- |
+| `load_skill` | `read` | 读技能指南全文，免审批，写审计 |
+| `execute_skill_script` | **`danger`** | 运行技能脚本，**每次执行必须用户审批**（终端询问 / Web 弹窗） |
+
+脚本执行的安全模型（多层防护，非容器级隔离，个人场景够用）：
+
+1. 路径钉死：只能运行该技能 `scripts/` 目录内的脚本，`../`、绝对路径一律拒绝
+2. 白名单前置：`allowed_scripts` 之外的脚本直接拒绝
+3. 独立进程 + 超时：`sys.executable` 子进程执行，超时（默认 60s）终止
+4. 输出封顶：stdout/stderr 合计超 20000 字符截断
+5. danger 档审批 + 全量审计：每次执行落 `tool_audit` 表
+
+### 8.5 配置开关（config/agent.yaml 的 skills 段）
+
+```yaml
+skills:
+  enabled: true          # 总开关：false 时技能不加载、两个工具不装配
+  dir: skills            # 技能根目录（相对路径按项目根解析）
+  allow_list: []         # 白名单：空 = 全部加载；非空 = 只加载列表内技能
+  script:
+    enabled: true        # 脚本执行总开关：false 一键降回纯知识型技能
+    timeout_seconds: 60
+    max_output_chars: 20000
+```
+
+仓库自带示例技能 `skills/weekly-report/`（周报撰写 + 骨架生成脚本），可直接作为编写新技能的范本。
+
+### 8.6 与子 Agent 的配合
+
+`load_skill` 已加入 `routing.main_agent.keep_tools` 与 research / coding 子 Agent 的 `allowed_tools`，主 Agent 与子 Agent 都能按技能指南执行；`execute_skill_script` 在 coding 子 Agent 白名单内，委派审批一次后内部可直接运行。
+
+---
+
+## 9. 配置参考
 
 配置分两层：密钥与环境相关进环境变量（`*_api_key_env` 指定变量名），行为策略进 `config/*.yaml`。
 
-### 8.1 config/agent.yaml（六段）
+### 9.1 config/agent.yaml（七段）
 
 | 段 | 管什么 |
 | --- | --- |
@@ -340,18 +492,19 @@ python scripts/verify_p6_subagents.py
 | `limits` | 单轮熔断限额：`max_tool_calls_per_turn`（默认 12）/ `max_model_calls_per_turn`（默认 15） |
 | `history` | 上下文压缩：摘要触发阈值（默认 12000 tokens）、保留消息数（默认 20） |
 | `server` | 启动脚本读取：Python 环境根目录、后端/前端端口 |
-| `runtime` | 运行时配置（原 .env 内容）：模型三档（main / fast / fallback）、MySQL、知识库、第三方 Key 环境变量名、CORS、Web 鉴权、日志目录与保留天数 |
+| `runtime` | 运行时配置（原 .env 内容）：模型三档（main / fast / fallback）、MySQL、知识库、第三方 Key 环境变量名、CORS、Web 鉴权、日志目录与保留天数、Langfuse 可观测 |
 | `routing` | 子 Agent 分流：总开关、主 Agent 保留清单、research / coding 定义、fan_out 参数 |
+| `skills` | 技能：总开关、目录、白名单、脚本执行约束（超时/输出上限） |
 
-### 8.2 config/tools.yaml
+### 9.2 config/tools.yaml
 
 工具白名单（`default_allow: false`，未登记一律禁用）、每个工具的权限档位、文件工具沙箱根目录（`data/workspace`，沙箱外路径一律拒绝）、KB 模式开关。
 
-### 8.3 config/mcp.yaml
+### 9.3 config/mcp.yaml
 
 MCP Server 清单：transport（stdio / streamable_http）、权限档位继承、工具白名单、超时。**接入新 Server 只加一段配置，不改代码。**
 
-### 8.4 密钥环境变量
+### 9.4 密钥环境变量
 
 | 环境变量 | 用途 |
 | --- | --- |
@@ -359,17 +512,17 @@ MCP Server 清单：transport（stdio / streamable_http）、权限档位继承�
 | `MYSQL_PASSWORD` | MySQL 密码（`mysql_password` 留空时回退读取） |
 | `TAVILY_API_KEY` | 联网搜索；缺失时该工具自动禁用而非启动报错 |
 
-### 8.5 权限档位
+### 9.5 权限档位
 
 | 档位 | 行为 | 当前成员 |
 | --- | --- | --- |
-| `read` | 直接执行，仅审计 | 时间、计算器、联网搜索、目录列表、读文件、知识库检索、全部 MCP 工具、`delegate_to_research` |
+| `read` | 直接执行，仅审计 | 时间、计算器、联网搜索、目录列表、读文件、知识库检索、`load_skill`、全部 MCP 工具、`delegate_to_research` |
 | `write` | 执行前需审批 | `write_file`、`remember`、`delegate_to_coding`（批准一次即整体授权子 Agent 内部操作） |
-| `danger` | 执行前需审批（更醒目的提示） | 预留档位，当前无成员 |
+| `danger` | 执行前需审批（更醒目的提示） | `execute_skill_script`（运行技能脚本） |
 
 ---
 
-## 9. HTTP API 速览
+## 10. HTTP API 速览
 
 后端（默认 8000 端口）对外提供三组端点，前端即基于它们工作：
 
@@ -393,7 +546,7 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 
 ---
 
-## 10. 测试与质量门禁
+## 11. 测试与质量门禁
 
 提交代码前跑一键门禁（ruff + mypy strict + 离线单测）：
 
@@ -424,7 +577,71 @@ python scripts/verify_p6_subagents.py    # 子 Agent 分流
 
 ---
 
-## 11. 常见问题
+## 12. Langfuse 可观测（trace 追踪 + Prompt 版本化）
+
+> 更新：2026-11-02（接入 Langfuse 自托管，补齐带 `trace_id` 的跨进程追踪与 Prompt 版本化管理）
+
+本项目已接入 **Langfuse（自托管）** 作为可观测层，与前端已有的「执行链路图谱」**并存互补**：
+
+- 前端聊天界面里的实时执行链路图（`ExecutionGraph`）继续给**最终用户**看执行过程，保持不变；
+- Langfuse 是**后端旁路**的开发者工具，负责补上两块能力：**标准 `trace_id` 的跨进程追踪**（打通主 Agent → 子 Agent → 工具 → RAG MCP 服务）、以及 **Prompt 版本化管理**（发布 / 回滚 / 灰度）。
+
+它是**可选**的：`langfuse_enabled: false` 时完全关闭，不影响对话等任何既有功能。
+
+### 12.1 部署 Langfuse（自托管）
+
+部署文件在 `deploy/langfuse/`，用 Docker Compose 一键拉起（Postgres + ClickHouse + Redis + Langfuse Web/Worker）：
+
+```bash
+cd deploy/langfuse
+docker compose --env-file .env up -d          # 首次会拉取镜像，约 2-3 分钟
+docker compose --env-file .env ps             # 看各容器状态，等待全部 Healthy/Started
+```
+
+面板默认监听 `http://localhost:3030`（避开前端 Next.js 的 3000 端口）。
+
+> **登录账号与 API Key**：`deploy/langfuse/.env` 里已通过 headless 初始化预置了账号、组织、项目与 API Key（含注释标记）。浏览器打开 `http://localhost:3030` 用该邮箱/密码登录即可。密钥均走 `.env`（已被 gitignore），不会进版本库。
+
+停止 / 升级：
+
+```bash
+docker compose --env-file .env down                              # 停止（保留数据）
+docker compose --env-file .env pull && docker compose --env-file .env up -d   # 升级镜像
+```
+
+### 12.2 配置（config/agent.yaml 的 langfuse 段）
+
+```yaml
+runtime:
+  langfuse_enabled: true            # 总开关：false 时完全关闭，优雅降级为 no-op
+  langfuse_host: http://localhost:3030
+  langfuse_public_key: "pk-lf-..."  # 面板 Project 设置里可查到
+  langfuse_secret_key: "sk-lf-..."  # 同上
+```
+
+三个 `langfuse_*` 字段均已预填 `deploy/langfuse/.env` 里生成的真实值。改了配置需重启后端。
+
+### 12.3 查看 trace 与 Prompt 版本
+
+登录 `http://localhost:3030`，进入 Project 后：
+
+| 想看的 | 面板位置 | 说明 |
+| --- | --- | --- |
+| **调用链路 trace** | 左侧导航 **Tracing / Traces** | 每次对话产生一条 trace，点开可见 `trace_id` / `session_id` / `user_id`、耗时、token 用量，以及「主 Agent → 子 Agent → 工具 → RAG 检索」的 span 嵌套层级 |
+| **Prompt 版本** | 左侧导航 **Prompts** | 找到 `agent-system`，查看版本历史、对比差异；`production` 这个 label 指向的版本即当前生产实际使用的版本 |
+
+### 12.4 Prompt 版本化管理
+
+system 主提示词已迁到 Langfuse 管理（模板 `agent-system`，`production` label）。运行时 `render_system_prompt` 优先从 Langfuse 拉取该 label 指向的版本编译渲染，**拉取失败自动回退本地 `backend/app/agents/prompts/system.j2`**，因此 Langfuse 挂了也不影响对话。
+
+- **发布新版本**：改完模板后重新运行 `python scripts/init_langfuse_prompts.py`，会创建一个新版本并把 `production` label 指过去。
+- **回滚**：在 Langfuse 面板把 `agent-system` 的 `production` label 指回旧版本即可，无需改代码、无需重新部署。
+
+> 注意：Langfuse 文本 Prompt 用 `{{ 变量 }}` 语法（Mustache 风格），**不支持** Jinja2 的 `{% if %}` 等控制流——条件拼接逻辑已移到 Python 端（`builder.py`）。当前仅 system 主提示词接入（试点）；persona 与子 Agent 的 `system_prompt` 仍留在 `config/agent.yaml`，后续可渐进迁移。
+
+---
+
+## 13. 常见问题
 
 **`make` 命令不识别**
 
@@ -471,7 +688,7 @@ PowerShell 下用 `npm.cmd`（同理 `npx.cmd`），或在 cmd / Git Bash 中直
 
 ---
 
-## 12. 目录速查
+## 14. 目录速查
 
 ```
 YuanAgent/
@@ -480,7 +697,9 @@ YuanAgent/
 ├── config/               # agent.yaml(.example) / tools.yaml / mcp.yaml
 ├── scripts/              # init_mysql.py、start_backend.py、start_frontend.py、
 │                         # rag/（serve_mcp.py、seed_agent_knowledge.py）、
-│                         # verify_p4_memory.py、verify_p6_subagents.py
+│                         # verify_p4_memory.py、verify_p6_subagents.py、
+│                         # init_langfuse_prompts.py
+├── deploy/langfuse/      # Langfuse 自托管（docker-compose.yml + .env，见第 12 章）
 ├── tests/                # unit（离线）/ integration / eval（RAG 金标准）
 ├── data/                 # kb_stub 语料 + workspace 沙箱
 ├── docs/                 # architecture.md、architecture-brief.md、design.md、
