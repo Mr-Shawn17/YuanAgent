@@ -47,8 +47,10 @@ from app.core.events import (
     make_event_logger,
 )
 from app.core.logging import get_logger, setup_logging
-from app.db.engine import Database, build_database
+from app.db.device_repo import DeviceRepo, IssuedToken
+from app.db.engine import Database, build_database, database_scope
 from app.db.message_sync import persist_new_messages
+from app.db.models import Device
 from app.db.session_repo import SessionRepo
 from app.llm.factory import get_chat_model, ping_model
 from app.mcp import McpManager
@@ -765,6 +767,110 @@ def ping(
 def version() -> None:
     """显示版本。"""
     console.print(f"daily-chat-agent v{__version__}")
+
+
+device_app = typer.Typer(help="本地执行器设备管理（签发 / 列出 / 吊销令牌）")
+cli_app.add_typer(device_app, name="device")
+
+
+@device_app.command("create")
+def device_create(
+    name: str = typer.Option("", "--name", "-n", help="设备备注名，如 my-laptop"),
+    user: str = typer.Option("", "--user", "-u", help="归属用户 ID，留空用默认用户"),
+    log_level: str = typer.Option("", "--log-level", help="覆盖 LOG_LEVEL"),
+    log_json: bool = typer.Option(False, "--log-json", help="以 JSON 格式输出日志"),
+) -> None:
+    """为本地执行器签发设备令牌（令牌只显示这一次）。"""
+    settings = _bootstrap(log_level, log_json)
+    user_id = user.strip() or settings.default_user_id
+
+    async def _run() -> IssuedToken:
+        async with database_scope(settings) as database, database.session() as session:
+            return await DeviceRepo(session).create(user_id=user_id, name=name)
+
+    try:
+        issued = asyncio.run(_run())
+    except AppError as error:
+        console.print(f"[red]✗ {error.message}[/]")
+        raise typer.Exit(code=1) from None
+    console.print(
+        Panel(
+            f"[bold]{issued.token}[/]\n\n"
+            f"设备 ID：{issued.device.id}\n"
+            f"归属用户：{issued.device.user_id}\n"
+            f"备注名：{issued.device.name or '(无)'}",
+            title="新设备令牌（只显示这一次，请立即保存）",
+            border_style="yellow",
+            expand=False,
+        )
+    )
+    console.print("[dim]写入执行器：python -m runner set-token <令牌>[/]")
+
+
+@device_app.command("list")
+def device_list(
+    log_level: str = typer.Option("", "--log-level", help="覆盖 LOG_LEVEL"),
+    log_json: bool = typer.Option(False, "--log-json", help="以 JSON 格式输出日志"),
+) -> None:
+    """列出全部已注册设备。"""
+    settings = _bootstrap(log_level, log_json)
+
+    async def _run() -> list[Device]:
+        async with database_scope(settings) as database, database.session() as session:
+            return await DeviceRepo(session).list_devices()
+
+    try:
+        rows = asyncio.run(_run())
+    except AppError as error:
+        console.print(f"[red]✗ {error.message}[/]")
+        raise typer.Exit(code=1) from None
+    table = Table(title="本地执行器设备", show_header=True)
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("备注名")
+    table.add_column("用户")
+    table.add_column("创建时间")
+    table.add_column("最近活跃")
+    table.add_column("状态")
+    for row in rows:
+        table.add_row(
+            row.id[:8],
+            row.name or "[dim]-[/]",
+            row.user_id,
+            row.created_at.strftime("%Y-%m-%d %H:%M"),
+            row.last_seen_at.strftime("%Y-%m-%d %H:%M") if row.last_seen_at else "[dim]从未[/]",
+            "[red]已吊销[/]" if row.revoked else "[green]有效[/]",
+        )
+    console.print(table)
+
+
+@device_app.command("revoke")
+def device_revoke(
+    device_id: str = typer.Argument(help="设备 ID（可用前缀匹配，取第一个匹配项）"),
+    log_level: str = typer.Option("", "--log-level", help="覆盖 LOG_LEVEL"),
+    log_json: bool = typer.Option(False, "--log-json", help="以 JSON 格式输出日志"),
+) -> None:
+    """吊销设备令牌（立即失效）。"""
+    settings = _bootstrap(log_level, log_json)
+
+    async def _run() -> Device | None:
+        async with database_scope(settings) as database, database.session() as session:
+            repo = DeviceRepo(session)
+            if len(device_id) < 8:
+                raise AppError("请至少提供 8 位 ID 前缀")
+            rows = [d for d in await repo.list_devices() if d.id.startswith(device_id)]
+            if not rows:
+                return None
+            return await repo.revoke(rows[0].id)
+
+    try:
+        record = asyncio.run(_run())
+    except AppError as error:
+        console.print(f"[red]✗ {error.message}[/]")
+        raise typer.Exit(code=1) from None
+    if record is None:
+        console.print(f"[red]✗ 未找到匹配设备：{device_id}[/]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]✓[/] 已吊销设备 {record.id[:8]}（{record.name or '无备注'}）")
 
 
 def main() -> None:

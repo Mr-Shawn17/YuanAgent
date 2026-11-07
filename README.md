@@ -23,6 +23,7 @@
 - [总体架构](#总体架构)
 - [技术栈](#技术栈)
 - [快速开始](#快速开始)
+- [本地执行器与工作目录（网页操作本机文件）](#本地执行器与工作目录网页操作本机文件)
 - [配置说明](#配置说明)
 - [HTTP API](#http-api)
 - [测试与质量门禁](#测试与质量门禁)
@@ -45,6 +46,7 @@
 | 📚 **RAG 与 Agent 解耦**    | 真实检索由独立 RAG 服务经 MCP 提供（Qdrant 混合检索），主项目只认一个 10 字段的 `KnowledgeChunk` 契约，无 Qdrant 也能用 stub 模式跑通全链路                        |
 | 🧠 **长期记忆**              | 说「请记住……」即写入记忆，跨会话可召回；长对话自动摘要压缩；记忆抽取放后台不阻塞回复                                                                             |
 | 💬 **双入口 + OpenAI 兼容**   | CLI 终端（Typer + Rich 打字机）与 Web 界面（SSE 流式 / 工具轨迹 / 引用卡片 / 审批弹窗 / 执行链路图）；另暴露 `/v1/chat/completions` 兼容端点，任何 OpenAI SDK 可直连 |
+| 💻 **本地执行器（网页操作本机文件）** | 双击本机 `YuanRunner.exe` 后台进程，Web 端 `read_file` / `write_file` / `list_directory` 经 WSS 转发到用户电脑执行，文件真正落在本机磁盘而非服务器沙箱；设备令牌鉴权 + 断线重连 + 单实例锁 |
 
 ## 它能做什么
 
@@ -183,6 +185,71 @@ cd frontend && npm install && npm run dev
 
 浏览器打开 <http://localhost:3000>：会话列表、流式气泡、工具轨迹折叠面板、引用卡片、审批弹窗、fan_out 执行链路图。
 
+## 本地执行器与工作目录（网页操作本机文件）
+
+> 目标：在浏览器里操作你本机电脑上的文件。文件工具默认 `mode: local`，把读写转发到运行在用户电脑上的无窗口后台进程 **YuanRunner**，文件真正落在本机磁盘，而不是服务器沙箱。完整方案见 [docs/local-runner.md](./docs/local-runner.md) 与 [docs/workspace.md](./docs/workspace.md)。
+
+### 一句话架构
+
+```
+网页 :3000 (Next rewrites /v1/*) → 后端 :8000 (FastAPI)
+  → 文件工具 mode=local → LocalTaskHub → /ws/runner (WSS)
+  → 本机 YuanRunner 进程 → 按绑定的工作目录执行 → 回传结果
+```
+
+### 启动三步（本机闭环）
+
+```bash
+# ① 后端（:8000，含 /ws/runner 与设备管理）
+python scripts/start_backend.py
+
+# ② 前端（:3000，Next rewrites 代理 /v1/* 到后端）
+cd frontend && npm run dev
+
+# ③ 本机执行器（无窗口后台进程，保持 WSS 长连接）
+python -m runner run          # 或双击打包后的 dist/YuanRunner/YuanRunner.exe
+```
+
+### 首次配置执行器（只需一次）
+
+```bash
+# 1) 生成示例配置 %LOCALAPPDATA%\YuanAgent\runner.yaml
+python -m runner init-config
+#    按需改 server_url（默认 ws://127.0.0.1:8000/ws/runner）与 workspace
+
+# 2) 中心签发设备令牌（令牌只显示一次，立即复制保存）
+python -m app.cli device create --name my-laptop
+
+# 3) 令牌写入本机凭据库（keyring）
+python -m runner set-token yrt_xxx...
+
+# 4) 启动执行器
+python -m runner run
+```
+
+执行器状态自检：`python -m runner status`（看版本 / 配置 / 服务地址 / 工作目录 / 令牌来源）。
+
+### 网页上选择工作目录
+
+浏览器打开 http://localhost:3000，顶栏右侧「📁 选择工作目录」按钮：
+
+- **下拉**列出执行器上报的常用目录（主目录 / 桌面 / 文档 / 下载等）
+- **手填**任意绝对路径（执行器校验存在后加入可用列表）
+- 选中即绑定到**当前会话**并持久化，不同会话可各绑一个目录、并行多开、动态热切换
+
+执行器离线时仍可聊天，文件操作返回 `[local_runner_offline]` 提示文本，不会中断对话。绑定接口为 `PUT /v1/sessions/{id}/workspace`，会话列表 `GET /v1/sessions` 返回各自绑定的 `workspace`。
+
+### 安全模型（非容器级隔离）
+
+- **设备令牌鉴权**：`secrets.token_urlsafe(32)`，库内只存 SHA-256，可吊销（`device revoke <id>`）
+- **传输**：WSS 长连接，执行器主动外连（无需在用户电脑开端口）
+- **路径沙箱**：执行器侧对每个 workspace 做 `is_relative_to` 越界检查，`../` 与绝对路径一律拒绝
+- **工具白名单**：执行器侧硬编码只认 `read_file` / `write_file` / `list_directory` 三个工具
+- **审批 + 审计**：write 档仍在中心服务弹审批窗，批准后下发；`tool_audit` 全量落库
+- **单实例锁**：重复双击执行器直接退出新进程
+
+⚠️ 这是「白名单 + 路径约束 + 人工审批」的软件层防护，不是操作系统级沙箱；执行器以当前登录用户普通权限运行，文件权限即该用户账户权限。
+
 ## 配置说明
 
 配置分两层：**行为策略进 `config/*.yaml`（进版本库）**，**密钥走环境变量（绝不进版本库）**。`config/agent.yaml` 含真实密码，已被 gitignore；模板见 `config/agent.yaml.example`。
@@ -210,6 +277,8 @@ cd frontend && npm install && npm run dev
 | `/v1/chat`                  | POST | SSE 流式对话；事件流含 `tool_start` / `approval_required` / `tool_end` / `citation` / token 等 |
 | `/v1/chat/{run_id}/approve` | POST | 审批回调：`call_id` + `decision`（allow / deny）                                            |
 | `/v1/sessions`              | GET  | 会话列表                                                                                 |
+| `/v1/workspaces`            | GET  | 在线执行器上报的可用工作目录列表（网页目录选择器用）                                                          |
+| `/v1/sessions/{id}/workspace` | GET/PUT | 读取 / 绑定会话的工作目录（PUT body：`{"workspace": "D:\\路径"}`）                                |
 | `/v1/chat/completions`      | POST | **OpenAI 兼容端点**，任何 OpenAI SDK 把 `base_url` 指到本服务即可                                   |
 | `/health`                   | GET  | 健康检查（鉴权豁免）                                                                           |
 
@@ -256,6 +325,7 @@ YuanAgent/
 │   ├── db/               #   ORM / 引擎 / 仓储
 │   └── core/             #   配置 / 事件总线 / 日志脱敏 / 错误层级
 ├── frontend/             # Next.js 15 前端
+├── runner/               # 本地执行器（YuanRunner）：WSS 客户端 + 文件三工具 + 单实例锁
 ├── skills/               # 技能目录（SKILL.md + 可选脚本，加目录即生效）
 ├── config/               # agent.yaml(.example) / tools.yaml / mcp.yaml
 ├── scripts/              # init_mysql / start_backend / start_frontend / rag/ / verify_*
@@ -273,6 +343,8 @@ YuanAgent/
 | [docs/architecture-brief.md](./docs/architecture-brief.md) | 架构速览：10-20 分钟读懂全貌                             |
 | [docs/design.md](./docs/design.md)                         | 设计规范                                          |
 | [docs/fanout-guide.md](./docs/fanout-guide.md)             | fan_out 并行委派使用说明                              |
+| [docs/local-runner.md](./docs/local-runner.md)             | 本地执行器（YuanRunner）实施方案：架构 / 协议 / 安全 / 打包部署 |
+| [docs/workspace.md](./docs/workspace.md)                   | 多工作目录方案：按会话绑定 / 目录上报 / 动态热切换               |
 | [docs/roadmap.md](./docs/roadmap.md)                       | 演进路线与现状差异清单                                   |
 
 ## Roadmap

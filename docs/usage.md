@@ -2,7 +2,7 @@
 
 面向本项目的使用者与二次开发者，覆盖从环境准备、安装配置到 CLI / Web 双入口使用、RAG 知识库接入、子 Agent 分流、测试门禁与常见问题排查的完整流程。内部实现原理与设计决策不在本文范围，见 [architecture.md](./architecture.md)。
 
-> 更新：2026-10-30（配置体系迁移至 `config/agent.yaml` 后）｜ 快速概览见仓库根 [README](../README.md)
+> 更新：2026-11-05（新增第 6 章「本地执行器与工作目录」）｜ 快速概览见仓库根 [README](../README.md)
 
 ---
 
@@ -13,15 +13,16 @@
 3. [首次安装](#3-首次安装)
 4. [使用 CLI 终端聊天](#4-使用-cli-终端聊天)
 5. [使用 Web 界面](#5-使用-web-界面)
-6. [接入 RAG 知识库](#6-接入-rag-知识库)
-7. [子 Agent 分流与 fan_out 并行](#7-子-agent-分流与-fan_out-并行)
-8. [技能 Skills：教 Agent 按你的流程做事](#8-技能-skills教-agent-按你的流程做事)
-9. [配置参考](#9-配置参考)
-10. [HTTP API 速览](#10-http-api-速览)
-11. [测试与质量门禁](#11-测试与质量门禁)
-12. [Langfuse 可观测（trace 追踪 + Prompt 版本化）](#12-langfuse-可观测trace-追踪--prompt-版本化)
-13. [常见问题](#13-常见问题)
-14. [目录速查](#14-目录速查)
+6. [本地执行器与工作目录（网页操作本机文件）](#6-本地执行器与工作目录网页操作本机文件)
+7. [接入 RAG 知识库](#7-接入-rag-知识库)
+8. [子 Agent 分流与 fan_out 并行](#8-子-agent-分流与-fan_out-并行)
+9. [技能 Skills：教 Agent 按你的流程做事](#9-技能-skills教-agent-按你的流程做事)
+10. [配置参考](#10-配置参考)
+11. [HTTP API 速览](#11-http-api-速览)
+12. [测试与质量门禁](#12-测试与质量门禁)
+13. [Langfuse 可观测（trace 追踪 + Prompt 版本化）](#13-langfuse-可观测trace-追踪--prompt-版本化)
+14. [常见问题](#14-常见问题)
+15. [目录速查](#15-目录速查)
 
 ---
 
@@ -31,7 +32,7 @@
 
 - **流式对话**：CLI 终端打字机效果，或浏览器 Web 界面 SSE 流式输出
 - **工具调用**：时间、计算器、联网搜索、沙箱文件读写、知识库检索等内置工具，外加 MCP 协议接入的第三方工具
-- **子 Agent 分流**：主 Agent 只做路由与汇总——调研任务委派给 research 子 Agent，沙箱写文件委派给 coding 子 Agent；多对象对比类问题经 `fan_out` 并行拆分执行（`config/agent.yaml` 一键开关，见[第 7 章](#7-子-agent-分流与-fan_out-并行)）
+- **子 Agent 分流**：主 Agent 只做路由与汇总——调研任务委派给 research 子 Agent，沙箱写文件委派给 coding 子 Agent；多对象对比类问题经 `fan_out` 并行拆分执行（`config/agent.yaml` 一键开关，见[第 8 章](#8-子-agent-分流与-fan_out-并行)）
 - **RAG 知识库**：检索命中后回答带 `[1] [2]` 引用编号，Web 端渲染可展开的引用卡片
 - **三级权限审批**：`read` 档工具直接执行；`write` / `danger` 档执行前必须经你确认（CLI 终端询问，Web 弹窗阻断）
 - **长期记忆**：说「请记住……」即写入记忆，跨会话可召回；长对话自动摘要压缩
@@ -254,11 +255,103 @@ cd frontend && npm run dev
 
 ---
 
-## 6. 接入 RAG 知识库
+## 6. 本地执行器与工作目录（网页操作本机文件）
+
+> 更新：2026-11-05。本功能让 Web 端的文件读写真正落到**用户本机电脑**，而不是服务器沙箱。完整设计见 [local-runner.md](./local-runner.md) 与 [workspace.md](./workspace.md)。
+
+### 6.1 一句话原理
+
+文件工具（`read_file` / `write_file` / `list_directory`）默认 `mode: local`。调用时经中心服务的 `LocalTaskHub`，通过 WSS 长连接转发到运行在用户电脑上的无窗口后台进程 **YuanRunner**，在其绑定的工作目录下执行后回传结果。
+
+```text
+网页 :3000 → 后端 :8000 → 文件工具 mode=local → LocalTaskHub → /ws/runner (WSS)
+  → 本机 YuanRunner → 按绑定的工作目录执行 → 回传结果
+```
+
+### 6.2 启动三进程（本机闭环）
+
+三个进程缺一不可，建议各开一个终端：
+
+```bash
+# ① 后端（:8000，含 /ws/runner 与 device 设备管理）
+python scripts/start_backend.py
+
+# ② 前端（:3000，Next rewrites 把 /v1/* 代理到后端）
+cd frontend && npm run dev
+
+# ③ 本机执行器（无窗口后台进程，保持 WSS 长连接）
+python -m runner run          # 或双击打包后的 dist/YuanRunner/YuanRunner.exe
+```
+
+### 6.3 首次配置执行器（只需一次）
+
+```bash
+# 1) 生成示例配置到 %LOCALAPPDATA%\YuanAgent\runner.yaml
+python -m runner init-config
+#    按需改 server_url（默认 ws://127.0.0.1:8000/ws/runner）与 workspace（默认 ~/YuanAgent-workspace）
+
+# 2) 中心签发设备令牌（令牌只显示一次，立即复制保存）
+python -m app.cli device create --name my-laptop
+
+# 3) 令牌写入本机凭据库（Windows 凭据管理器 / keyring）
+python -m runner set-token yrt_xxx...
+
+# 4) 启动执行器
+python -m runner run
+```
+
+执行器子命令一览：
+
+| 命令 | 作用 |
+| --- | --- |
+| `python -m runner run` | 启动执行器（默认命令，双击 exe 即此） |
+| `python -m runner init-config` | 生成示例 `runner.yaml` |
+| `python -m runner set-token <令牌>` | 保存设备令牌到系统凭据库 |
+| `python -m runner status` | 显示版本 / 配置 / 服务地址 / 工作目录 / 令牌来源 |
+| `python -m runner clear-token` | 删除已保存的令牌 |
+
+设备管理子命令（后端侧）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `python -m app.cli device create --name <备注>` | 签发设备令牌（只显示一次） |
+| `python -m app.cli device list` | 列出设备（ID / 备注 / 状态 / 最近在线） |
+| `python -m app.cli device revoke <id前缀>` | 吊销令牌（前缀匹配） |
+
+### 6.4 网页上选择工作目录
+
+浏览器打开 http://localhost:3000，顶栏右侧「📁 选择工作目录」按钮：
+
+- **下拉**：列出执行器上报的常用目录（主目录 / 桌面 / 文档 / 下载等）
+- **手填**：输入任意绝对路径（如 `E:\agent_test`），执行器校验存在后加入可用列表
+- **绑定**：选中即绑定到**当前会话**并持久化到 `sessions.meta`；不同会话可各绑一个目录、并行多开、动态热切换
+
+补充语义：
+
+- 新会话默认未绑定目录，首次选择后绑定；次日重开该会话自动恢复绑定
+- 执行器离线时仍可聊天，文件操作返回 `[local_runner_offline]` 提示文本，不会中断对话
+- 绑定接口 `PUT /v1/sessions/{id}/workspace`；会话列表 `GET /v1/sessions` 返回各自 `workspace`；可用目录列表 `GET /v1/workspaces`
+
+### 6.5 安全模型（非容器级隔离）
+
+| 机制 | 说明 |
+| --- | --- |
+| 设备令牌鉴权 | `secrets.token_urlsafe(32)`（`yrt_` 前缀），库内只存 SHA-256，可吊销 |
+| 传输 | WSS 长连接，执行器主动外连，无需在用户电脑开端口 |
+| 路径沙箱 | 执行器对每个 workspace 做 `is_relative_to` 越界检查，`../` 与绝对路径一律拒绝 |
+| 工具白名单 | 执行器侧只认 `read_file` / `write_file` / `list_directory` 三个工具 |
+| 审批 + 审计 | write 档仍在中心服务弹审批窗，批准后下发；`tool_audit` 全量落库 |
+| 单实例锁 | 重复双击执行器直接退出新进程 |
+
+⚠️ 这是「白名单 + 路径约束 + 人工审批」的**软件层防护**，不是操作系统级沙箱；执行器以当前登录用户普通权限运行，文件权限即该用户账户权限。当前**不含任意 CLI 命令执行**能力（唯一会跑进程的是技能脚本 `execute_skill_script`，走 danger 档审批）。
+
+---
+
+## 7. 接入 RAG 知识库
 
 知识库与 Agent 已解耦：真实检索能力由外部混合检索 RAG 服务提供（Qdrant 稠密 + BM25 稀疏 → RRF 融合 → rerank），本项目经 MCP over streamable-http 调用。**不需要真实知识库时可跳过本节，用 stub 模式（本地模拟数据）即可跑通全部链路。**
 
-### 6.1 stub / mcp 两种模式
+### 7.1 stub / mcp 两种模式
 
 | 模式 | 说明 | 适用 |
 | --- | --- | --- |
@@ -272,7 +365,7 @@ cd frontend && npm run dev
 
 MCP 模式下工具带 `rag__` 命名空间前缀：`rag__search` / `rag__list_companies` / `rag__get_chunk_detail` / `rag__health`，全 `read` 档免审批。
 
-### 6.2 启动你自己的 RAG MCP 服务
+### 7.2 启动你自己的 RAG MCP 服务
 
 本项目自带一个最小 RAG MCP 服务（供联调参考）：
 
@@ -288,7 +381,7 @@ python scripts/rag/seed_agent_knowledge.py   # 幂等：灌入年报语料到 ag
 
 > 生产环境建议部署独立的混合检索服务（Qdrant + embedding + reranker），并把 `config/mcp.yaml` 的 `url` 指过去。若你的 RAG 服务端是旧版 MCP SDK（协议 2024-11-05），需在 rag 条目加 `mode: legacy` 强制旧版握手。
 
-### 6.3 跑金标准评测（可选）
+### 7.3 跑金标准评测（可选）
 
 RAG 服务启动后：
 
@@ -301,7 +394,7 @@ python -m pytest tests/eval -q -m rag_service -s
 
 ---
 
-## 7. 子 Agent 分流与 fan_out 并行
+## 8. 子 Agent 分流与 fan_out 并行
 
 主 Agent 只做路由与汇总：检索调研类任务委派给 **research** 子 Agent，沙箱文件编写委派给 **coding** 子 Agent；多对象对比类问题（如「对比 A、B 两家公司 2024 年营收」）由 `fan_out` 工具并行拆分执行。对使用者的影响：
 
@@ -330,11 +423,11 @@ python scripts/verify_p6_subagents.py
 
 ---
 
-## 8. 技能 Skills：教 Agent 按你的流程做事
+## 9. 技能 Skills：教 Agent 按你的流程做事
 
 Skill = 一包可插拔的领域操作指南：一个目录、一份 `SKILL.md`（YAML frontmatter + markdown 指南正文），可选携带模板资源与 Python 脚本。Agent 平时只在系统提示里看到技能清单（名称 + 一行描述），任务匹配时才调 `load_skill` 读指南全文，再按指南组合现有工具执行。这套做法叫**渐进式披露**，好处是技能再多也不撑爆上下文。
 
-### 8.1 用起来：加目录 → 重启 → 说一句话
+### 9.1 用起来：加目录 → 重启 → 说一句话
 
 三步，不用写任何代码：
 
@@ -381,7 +474,7 @@ weekly-report   撰写周报的流程指南。当用户提到…    gen_skeleton
 
 脚本的工作目录是它自身所在的 `scripts/` 目录，所以 `--output` 传相对路径时文件落在 `scripts/` 下；脚本会打印解析后的绝对路径，想写到别处直接传绝对路径。
 
-### 8.2 触发不生效怎么查
+### 9.2 触发不生效怎么查
 
 按下面顺序排查，绝大多数问题在第一步就能看到：
 
@@ -394,7 +487,7 @@ weekly-report   撰写周报的流程指南。当用户提到…    gen_skeleton
 | 脚本超时被杀 | 单次执行超过 `timeout_seconds`（默认 60s） | 拆小脚本，或在 frontmatter 里调 `script_timeout` |
 | 输出被截断 | stdout/stderr 合计超过 `max_output_chars`（默认 20000） | 脚本自己写文件，只往 stdout 打摘要 |
 
-### 8.3 写一份自己的技能
+### 9.3 写一份自己的技能
 
 ```text
 skills/
@@ -444,7 +537,7 @@ execute_skill_script(skill_name="weekly-report", script_name="gen_skeleton.py",
 
 写完重启一次，用 `/skills` 确认加载成功，再用一句自然语言试触发。仓库自带的 `skills/weekly-report/` 是完整范本，照着抄结构最快。
 
-### 8.4 两个内置工具与权限
+### 9.4 两个内置工具与权限
 
 | 工具 | 档位 | 行为 |
 | --- | --- | --- |
@@ -459,7 +552,7 @@ execute_skill_script(skill_name="weekly-report", script_name="gen_skeleton.py",
 4. 输出封顶：stdout/stderr 合计超 20000 字符截断
 5. danger 档审批 + 全量审计：每次执行落 `tool_audit` 表
 
-### 8.5 配置开关（config/agent.yaml 的 skills 段）
+### 9.5 配置开关（config/agent.yaml 的 skills 段）
 
 ```yaml
 skills:
@@ -474,17 +567,17 @@ skills:
 
 仓库自带示例技能 `skills/weekly-report/`（周报撰写 + 骨架生成脚本），可直接作为编写新技能的范本。
 
-### 8.6 与子 Agent 的配合
+### 9.6 与子 Agent 的配合
 
 `load_skill` 已加入 `routing.main_agent.keep_tools` 与 research / coding 子 Agent 的 `allowed_tools`，主 Agent 与子 Agent 都能按技能指南执行；`execute_skill_script` 在 coding 子 Agent 白名单内，委派审批一次后内部可直接运行。
 
 ---
 
-## 9. 配置参考
+## 10. 配置参考
 
 配置分两层：密钥与环境相关进环境变量（`*_api_key_env` 指定变量名），行为策略进 `config/*.yaml`。
 
-### 9.1 config/agent.yaml（七段）
+### 10.1 config/agent.yaml（七段）
 
 | 段 | 管什么 |
 | --- | --- |
@@ -496,15 +589,15 @@ skills:
 | `routing` | 子 Agent 分流：总开关、主 Agent 保留清单、research / coding 定义、fan_out 参数 |
 | `skills` | 技能：总开关、目录、白名单、脚本执行约束（超时/输出上限） |
 
-### 9.2 config/tools.yaml
+### 10.2 config/tools.yaml
 
 工具白名单（`default_allow: false`，未登记一律禁用）、每个工具的权限档位、文件工具沙箱根目录（`data/workspace`，沙箱外路径一律拒绝）、KB 模式开关。
 
-### 9.3 config/mcp.yaml
+### 10.3 config/mcp.yaml
 
 MCP Server 清单：transport（stdio / streamable_http）、权限档位继承、工具白名单、超时。**接入新 Server 只加一段配置，不改代码。**
 
-### 9.4 密钥环境变量
+### 10.4 密钥环境变量
 
 | 环境变量 | 用途 |
 | --- | --- |
@@ -512,7 +605,7 @@ MCP Server 清单：transport（stdio / streamable_http）、权限档位继承�
 | `MYSQL_PASSWORD` | MySQL 密码（`mysql_password` 留空时回退读取） |
 | `TAVILY_API_KEY` | 联网搜索；缺失时该工具自动禁用而非启动报错 |
 
-### 9.5 权限档位
+### 10.5 权限档位
 
 | 档位 | 行为 | 当前成员 |
 | --- | --- | --- |
@@ -522,7 +615,7 @@ MCP Server 清单：transport（stdio / streamable_http）、权限档位继承�
 
 ---
 
-## 10. HTTP API 速览
+## 11. HTTP API 速览
 
 后端（默认 8000 端口）对外提供三组端点，前端即基于它们工作：
 
@@ -530,7 +623,9 @@ MCP Server 清单：transport（stdio / streamable_http）、权限档位继承�
 | --- | --- | --- |
 | `/v1/chat` | POST | SSE 流式对话。请求体：`message`（必填）、`session_id`（空则新建会话）、`user_id`。事件流包含 `tool_start` / `approval_required` / `approval_decided` / `tool_end` / `citation` / token 与错误事件 |
 | `/v1/chat/{run_id}/approve` | POST | 审批回调。请求体：`call_id`、`decision`（`allow` / `deny`） |
-| `/v1/sessions` | GET | 会话列表（thread_id、标题、消息数、更新时间） |
+| `/v1/sessions` | GET | 会话列表（thread_id、标题、消息数、更新时间、绑定的 `workspace`） |
+| `/v1/workspaces` | GET | 在线执行器上报的可用工作目录列表（网页目录选择器用） |
+| `/v1/sessions/{id}/workspace` | GET/PUT | 读取 / 绑定会话的工作目录（PUT body：`{"workspace": "D:\\路径"}`） |
 | `/v1/chat/completions` | POST | OpenAI 兼容端点。请求体：`model`、`messages`、`stream`（true 走 SSE 增量帧）、`session_id`、`user` |
 | `/health` | GET | 健康检查（鉴权豁免） |
 
@@ -546,7 +641,7 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 
 ---
 
-## 11. 测试与质量门禁
+## 12. 测试与质量门禁
 
 提交代码前跑一键门禁（ruff + mypy strict + 离线单测）：
 
@@ -565,7 +660,7 @@ python -m pytest -q
 | `make test` | 离线单测（FakeChatModel，排除 online / mysql / rag_service 标记） | 无 |
 | `make test-online` | 触网集成测试 | 真实 API Key |
 | `make test-mysql` | 审计 / 记忆落库集成测试 | MySQL 实例 |
-| `make eval` | RAG 金标准评测 | RAG MCP 服务（见第 6 节） |
+| `make eval` | RAG 金标准评测 | RAG MCP 服务（见第 7 节） |
 | `make check` | lint + typecheck + test 一键门禁 | 无 |
 
 端到端验收脚本（真实 LLM + MySQL）：
@@ -577,7 +672,7 @@ python scripts/verify_p6_subagents.py    # 子 Agent 分流
 
 ---
 
-## 12. Langfuse 可观测（trace 追踪 + Prompt 版本化）
+## 13. Langfuse 可观测（trace 追踪 + Prompt 版本化）
 
 > 更新：2026-11-02（接入 Langfuse 自托管，补齐带 `trace_id` 的跨进程追踪与 Prompt 版本化管理）
 
@@ -588,7 +683,7 @@ python scripts/verify_p6_subagents.py    # 子 Agent 分流
 
 它是**可选**的：`langfuse_enabled: false` 时完全关闭，不影响对话等任何既有功能。
 
-### 12.1 部署 Langfuse（自托管）
+### 13.1 部署 Langfuse（自托管）
 
 部署文件在 `deploy/langfuse/`，用 Docker Compose 一键拉起（Postgres + ClickHouse + Redis + Langfuse Web/Worker）：
 
@@ -609,7 +704,7 @@ docker compose --env-file .env down                              # 停止（保�
 docker compose --env-file .env pull && docker compose --env-file .env up -d   # 升级镜像
 ```
 
-### 12.2 配置（config/agent.yaml 的 langfuse 段）
+### 13.2 配置（config/agent.yaml 的 langfuse 段）
 
 ```yaml
 runtime:
@@ -621,7 +716,7 @@ runtime:
 
 三个 `langfuse_*` 字段均已预填 `deploy/langfuse/.env` 里生成的真实值。改了配置需重启后端。
 
-### 12.3 查看 trace 与 Prompt 版本
+### 13.3 查看 trace 与 Prompt 版本
 
 登录 `http://localhost:3030`，进入 Project 后：
 
@@ -630,7 +725,7 @@ runtime:
 | **调用链路 trace** | 左侧导航 **Tracing / Traces** | 每次对话产生一条 trace，点开可见 `trace_id` / `session_id` / `user_id`、耗时、token 用量，以及「主 Agent → 子 Agent → 工具 → RAG 检索」的 span 嵌套层级 |
 | **Prompt 版本** | 左侧导航 **Prompts** | 找到 `agent-system`，查看版本历史、对比差异；`production` 这个 label 指向的版本即当前生产实际使用的版本 |
 
-### 12.4 Prompt 版本化管理
+### 13.4 Prompt 版本化管理
 
 system 主提示词已迁到 Langfuse 管理（模板 `agent-system`，`production` label）。运行时 `render_system_prompt` 优先从 Langfuse 拉取该 label 指向的版本编译渲染，**拉取失败自动回退本地 `backend/app/agents/prompts/system.j2`**，因此 Langfuse 挂了也不影响对话。
 
@@ -641,7 +736,15 @@ system 主提示词已迁到 Langfuse 管理（模板 `agent-system`，`producti
 
 ---
 
-## 13. 常见问题
+## 14. 常见问题
+
+**网页点「绑定」工作目录报 HTTP 404**
+
+通常是当前会话还没生成 session id（页面刚打开、尚未发送过消息）。刷新页面即可——前端会在初始化时自动预生成会话 id，之后再绑定就不会 404。若仍报错，确认后端已重启到包含 `/v1/sessions/{id}/workspace` 端点的版本。
+
+**执行器连不上 / 文件操作返回 `[local_runner_offline]`**
+
+`python -m runner status` 自查：令牌是否已写入（`set-token`）、`runner.yaml` 的 `server_url` 是否指向后端、后端 `/ws/runner` 是否可达。执行器日志在 `%LOCALAPPDATA%\YuanAgent\logs\runner.log`。执行器离线不影响聊天，只是文件操作落到 offline 提示。
 
 **`make` 命令不识别**
 
@@ -688,22 +791,25 @@ PowerShell 下用 `npm.cmd`（同理 `npx.cmd`），或在 cmd / Git Bash 中直
 
 ---
 
-## 14. 目录速查
+## 15. 目录速查
 
 ```
 YuanAgent/
 ├── backend/app/          # Python 主应用（cli.py 终端入口 / main.py Web 入口 / api/ HTTP 层）
 ├── frontend/             # Next.js 15 Web 前端
+├── runner/               # 本地执行器（YuanRunner）：WSS 客户端 + 文件三工具 + 单实例锁（见第 6 章）
 ├── config/               # agent.yaml(.example) / tools.yaml / mcp.yaml
 ├── scripts/              # init_mysql.py、start_backend.py、start_frontend.py、
 │                         # rag/（serve_mcp.py、seed_agent_knowledge.py）、
 │                         # verify_p4_memory.py、verify_p6_subagents.py、
+│                         # verify_local_runner.py、verify_workspace.py、
 │                         # init_langfuse_prompts.py
-├── deploy/langfuse/      # Langfuse 自托管（docker-compose.yml + .env，见第 12 章）
+├── deploy/langfuse/      # Langfuse 自托管（docker-compose.yml + .env，见第 13 章）
 ├── tests/                # unit（离线）/ integration / eval（RAG 金标准）
 ├── data/                 # kb_stub 语料 + workspace 沙箱
 ├── docs/                 # architecture.md、architecture-brief.md、design.md、
-│                         # fanout-guide.md、roadmap.md、本文
+│                         # fanout-guide.md、local-runner.md、workspace.md、
+│                         # roadmap.md、本文
 ├── Makefile              # 常用命令入口
 └── LICENSE               # MIT
 ```

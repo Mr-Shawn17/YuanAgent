@@ -9,6 +9,11 @@
 # sandbox_root 为文件类工具的沙箱根目录，相对路径按项目根解析；
 # 沙箱外的路径（../、绝对路径）一律拒绝。
 # default_allow: false 表示未在本文件列出的工具一律禁用。
+#
+# 文件工具的 mode 字段：
+#   server  服务器进程直接读写 sandbox_root（CLI 场景=本机，等价旧行为）
+#   local   经本地执行器（YuanRunner）读写用户电脑上的工作目录（Web 多人场景）
+#           执行器未连接时工具返回 local_runner_offline 提示，不影响其他功能
 
 sandbox_root: data/workspace
 default_allow: false
@@ -30,14 +35,17 @@ tools:
   list_directory:
     enabled: true
     tier: read
+    mode: local
 
   read_file:
     enabled: true
     tier: read
+    mode: local
 
   write_file:
     enabled: true
     tier: write
+    mode: local
 
   remember:
     enabled: true

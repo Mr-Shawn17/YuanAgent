@@ -76,6 +76,15 @@ class SessionRepo:
             .values(archived=archived, updated_at=utcnow())
         )
 
+    async def set_meta(self, session_id: str, key: str, value: Any, *, user_id: str = "") -> None:
+        """写入会话 meta 的一个键（如 workspace）；会话不存在时补建。"""
+        record = await self.touch_session(session_id, user_id=user_id or UNKNOWN_USER)
+        meta = dict(record.meta or {})
+        meta[key] = value
+        record.meta = meta
+        record.updated_at = utcnow()
+        await self._db.flush()
+
     async def add_message(
         self,
         session_id: str,

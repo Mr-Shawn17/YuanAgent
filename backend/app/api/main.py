@@ -22,6 +22,7 @@ from app.agents.builder import mysql_checkpointer, mysql_store
 from app.api.auth import ApiKeyAuthMiddleware
 from app.api.routes_chat import router as chat_router
 from app.api.routes_openai import router as openai_router
+from app.api.routes_runner import router as runner_router
 from app.api.routes_sessions import router as sessions_router
 from app.api.runtime import AgentRuntime
 from app.core.config import get_agent_config, get_settings
@@ -131,10 +132,14 @@ def create_app() -> FastAPI:
     application.include_router(chat_router)
     application.include_router(sessions_router)
     application.include_router(openai_router)
+    application.include_router(runner_router)
 
     @application.get("/health")
     async def health() -> dict[str, Any]:
         return {"status": "ok", "version": __version__}
+
+    # 说明：/ws/runner 是 WebSocket 端点，走 ASGI 层，天然不经过
+    # ApiKeyAuthMiddleware（BaseHTTPMiddleware 只拦 HTTP）；它用设备令牌自行鉴权。
 
     return application
 

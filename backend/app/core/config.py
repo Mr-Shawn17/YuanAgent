@@ -143,6 +143,14 @@ class Settings(BaseModel):
 
     tavily_api_key: SecretStr = SecretStr("")
 
+    # ===== 本地执行器（Local Runner）任务转发 =====
+    # 总开关：false 时文件工具不注入 local_router（tools.yaml 的 mode 配置失效，直接读服务器沙箱）
+    local_runner_enabled: bool = True
+    # 单次工具任务的下发 + 等待结果全流程超时（秒），与 SubAgent 默认超时对齐
+    local_dispatch_timeout: float = Field(default=120.0, gt=0, le=600)
+    # 执行器心跳间隔（秒）；客户端侧连续 3 次未收 pong 判定断线
+    local_heartbeat_seconds: float = Field(default=30.0, gt=5, le=120)
+
     @field_validator("log_level")
     @classmethod
     def _normalize_level(cls, value: str) -> str:
