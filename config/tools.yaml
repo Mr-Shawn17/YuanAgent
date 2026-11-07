@@ -71,3 +71,35 @@ tools:
   execute_skill_script:
     enabled: true
     tier: danger
+
+  # ===== 命令沙箱（docs/local-runner.md：策略层白名单+超时+杀进程树+env 白名单，
+  # runner 侧可配 windows_sandbox VM 档）=====
+  # CLI 命令执行：支持 && 与管道，每个子命令都须在白名单内（runner.yaml 可扩展）
+  run_command:
+    enabled: true
+    tier: danger
+    mode: local
+
+  # 编程任务整段委派给用户本机 codex CLI（自带沙箱、用户自己账号），
+  # 轻量单文件修改用 write_file 更省 token
+  delegate_coding:
+    enabled: true
+    tier: danger
+    mode: local
+
+  # 结构化 git 工具：命令由 runner 拼装，私有仓库凭证存系统凭据库，
+  # 永不进入模型上下文（录入：python -m runner set-git-cred <host>）
+  git_clone:
+    enabled: true
+    tier: danger
+    mode: local
+
+  git_pull:
+    enabled: true
+    tier: danger
+    mode: local
+
+  git_push:
+    enabled: true
+    tier: danger
+    mode: local

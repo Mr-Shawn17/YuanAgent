@@ -12,6 +12,8 @@ from pathlib import Path
 
 import yaml
 
+from runner.command import CommandPolicy
+
 APP_DIR_NAME = "YuanAgent"
 CONFIG_NAME = "runner.yaml"
 DEFAULT_SERVER_URL = "ws://127.0.0.1:8000/ws/runner"
@@ -43,6 +45,8 @@ class RunnerConfig:
     # 重连退避：initial → max（秒），指数增长
     reconnect_initial: float = 1.0
     reconnect_max: float = 60.0
+    # 命令执行策略（run_command / git_* / delegate_coding，见 runner/command.py）
+    command: CommandPolicy = field(default_factory=CommandPolicy)
     extra: dict[str, str] = field(default_factory=dict)
 
 
@@ -75,7 +79,58 @@ def load_config(path: Path | None = None) -> RunnerConfig:
         config.reconnect_initial = max(0.5, float(raw["reconnect_initial"]))
     if isinstance(raw.get("reconnect_max"), (int, float)):
         config.reconnect_max = max(config.reconnect_initial, float(raw["reconnect_max"]))
+    raw_command = raw.get("command")
+    if isinstance(raw_command, dict):
+        _apply_command_section(config.command, raw_command)
     return config
+
+
+def _apply_command_section(policy: CommandPolicy, section: dict[str, object]) -> None:
+    """防御式解析 command 段（类型不符的字段忽略，不炸启动）。"""
+    if isinstance(section.get("backend"), str):
+        policy.backend = section["backend"].strip().lower() or "auto"
+    if isinstance(section.get("shell"), str):
+        policy.shell = section["shell"].strip().lower() or "cmd"
+    if isinstance(section.get("allowed_commands"), list):
+        names = [
+            str(item).strip().lower()
+            for item in section["allowed_commands"]
+            if str(item).strip()
+        ]
+        if names:
+            policy.allowed_commands = names
+    if isinstance(section.get("blocked_patterns"), list):
+        patterns = [
+            str(item) for item in section["blocked_patterns"] if str(item).strip()
+        ]
+        if patterns:
+            policy.blocked_patterns = patterns
+    if isinstance(section.get("env_whitelist"), list):
+        policy.env_whitelist = [
+            str(item).strip() for item in section["env_whitelist"] if str(item).strip()
+        ]
+    if isinstance(section.get("timeout_seconds"), int):
+        policy.timeout_seconds = max(5, int(section["timeout_seconds"]))
+    if isinstance(section.get("max_timeout_seconds"), int):
+        policy.max_timeout_seconds = max(
+            policy.timeout_seconds, int(section["max_timeout_seconds"])
+        )
+    if isinstance(section.get("max_output_chars"), int):
+        policy.max_output_chars = max(1000, min(int(section["max_output_chars"]), 200_000))
+    if isinstance(section.get("sandbox_tools_dir"), str):
+        policy.sandbox_tools_dir = _expand(section["sandbox_tools_dir"], app_dir()).strip()
+    raw_git = section.get("git")
+    if isinstance(raw_git, dict):
+        if isinstance(raw_git.get("user_name"), str):
+            policy.git_user_name = raw_git["user_name"].strip() or policy.git_user_name
+        if isinstance(raw_git.get("user_email"), str):
+            policy.git_user_email = raw_git["user_email"].strip() or policy.git_user_email
+    if isinstance(section.get("codex_enabled"), bool):
+        policy.codex_enabled = section["codex_enabled"]
+    if isinstance(section.get("codex_path"), str):
+        policy.codex_path = section["codex_path"].strip() or "codex"
+    if isinstance(section.get("codex_timeout_seconds"), int):
+        policy.codex_timeout_seconds = max(60, min(int(section["codex_timeout_seconds"]), 3600))
 
 
 def write_default_config(path: Path | None = None, *, overwrite: bool = False) -> Path:
@@ -91,6 +146,20 @@ def write_default_config(path: Path | None = None, *, overwrite: bool = False) -
         "heartbeat_seconds: 30\n"
         "reconnect_initial: 1\n"
         "reconnect_max: 60\n"
+        "\n"
+        "# 命令执行策略（run_command / git_* / delegate_coding）\n"
+        "# backend: auto | shell | windows_sandbox（auto=沙盒功能启用时用 VM 档）\n"
+        "# 白名单/黑名单默认值见 runner/command.py，此处按需覆盖扩展\n"
+        "command:\n"
+        "  backend: auto\n"
+        "  shell: cmd\n"
+        "  timeout_seconds: 120\n"
+        "  # allowed_commands: [git, python, node]\n"
+        "  # blocked_patterns: []\n"
+        "  git:\n"
+        "    user_name: YuanAgent\n"
+        "    user_email: yuanagent@local\n"
+        "  codex_enabled: true\n"
     )
     resolved.write_text(content, encoding="utf-8")
     return resolved

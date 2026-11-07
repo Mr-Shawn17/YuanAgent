@@ -24,6 +24,8 @@ a = Analysis(
         "keyring.backends.chainer",
         # yaml C 加速器缺失时纯 Python 回退，但显式声明避免告警
         "yaml",
+        # 命令沙箱：psutil 为 C 扩展，显式声明保证杀进程树能力可用
+        "psutil",
     ],
     hookspath=[],
     hooksconfig={},

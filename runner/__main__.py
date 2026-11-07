@@ -14,6 +14,7 @@ from runner import __version__
 from runner.auth import clear_token, set_token, token_status
 from runner.config import RunnerConfig, default_config_path, load_config, write_default_config
 from runner.connection import run_forever
+from runner.gitops import delete_git_cred, get_git_cred, set_git_cred
 from runner.logging_setup import setup_logging
 from runner.singleton import SingleInstanceError, SingleInstanceLock
 
@@ -63,6 +64,34 @@ def _cmd_status(_: argparse.Namespace) -> int:
     print(f"服务地址：{config.server_url}")
     print(f"工作目录：{config.workspace}")
     print(f"令牌来源：{token_status()}")
+    print(f"命令后端：{config.command.backend}（shell={config.command.shell}）")
+    return 0
+
+
+def _cmd_set_git_cred(args: argparse.Namespace) -> int:
+    import getpass
+
+    host = args.host.strip().lower()
+    if not host:
+        print("用法：python -m runner set-git-cred <host>（如 github.com）", file=sys.stderr)
+        return 1
+    username = (args.username or input(f"用户名（{host}）：")).strip()
+    pat = getpass.getpass(f"Personal Access Token（{host}，输入不回显）：").strip()
+    try:
+        set_git_cred(host, username, pat)
+    except Exception as exc:
+        print(f"✗ 保存失败：{exc}", file=sys.stderr)
+        return 1
+    print(f"✓ 已保存 {host} 的 git 凭证到系统凭据库（仅本机，不会上传服务器）")
+    return 0
+
+
+def _cmd_clear_git_cred(args: argparse.Namespace) -> int:
+    host = args.host.strip().lower()
+    if get_git_cred(host) is None:
+        print(f"（{host} 无已存凭证）")
+        return 0
+    print("✓ 已删除凭证" if delete_git_cred(host) else f"✗ 删除失败（{host}）")
     return 0
 
 
@@ -93,6 +122,17 @@ def build_parser() -> argparse.ArgumentParser:
     token_p = sub.add_parser("set-token", help="保存设备令牌到系统凭据库")
     token_p.add_argument("token", help="app device create 签发的令牌（yrt_ 开头）")
     token_p.set_defaults(func=_cmd_set_token)
+
+    gitcred_p = sub.add_parser(
+        "set-git-cred", help="保存某 git host 的 HTTPS 凭证（用户名+PAT，私有仓库 clone/push 用）"
+    )
+    gitcred_p.add_argument("host", help="git 主机名，如 github.com / gitlab.com")
+    gitcred_p.add_argument("--username", "-u", default="", help="用户名（不传则交互输入）")
+    gitcred_p.set_defaults(func=_cmd_set_git_cred)
+
+    gitclear_p = sub.add_parser("clear-git-cred", help="删除某 git host 的已存凭证")
+    gitclear_p.add_argument("host", help="git 主机名")
+    gitclear_p.set_defaults(func=_cmd_clear_git_cred)
 
     sub.add_parser("clear-token", help="删除已保存的令牌").set_defaults(func=_cmd_clear_token)
     sub.add_parser("status", help="显示配置与令牌状态").set_defaults(func=_cmd_status)

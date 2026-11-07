@@ -3,7 +3,8 @@
 安全模型（非容器级隔离，多层防护 + 人工信任）：
 1. 路径钉死：脚本必须位于该 skill 的 scripts/ 子目录内（resolve 后包含检查）
 2. 白名单前置：frontmatter allowed_scripts 之外的脚本直接拒绝
-3. 独立进程：subprocess + 当前解释器，超时 kill 整个进程树
+3. 独立进程：subprocess + 当前解释器；环境变量白名单（不继承 API key 等宿主密钥），
+   超时杀整棵进程树（经 tools/builtin/shell.py 的 run_argv_core，与命令沙箱同实现）
 4. 输出封顶：stdout/stderr 合计截断，防撑爆模型上下文
 5. danger 档审批由 ToolPermissionMiddleware 在工具层强制（本项目首个 danger 成员）
 """
@@ -12,13 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import shlex
-import subprocess
 import sys
 from pathlib import Path
 
 from app.core.errors import PermissionDeniedError
 from app.core.logging import get_logger
 from app.skills.schema import SkillRecord
+from app.tools.builtin.shell import run_argv_core
 
 logger = get_logger(__name__)
 
@@ -73,33 +74,15 @@ async def run_skill_script(
         script=script.name,
         timeout=timeout_seconds,
     )
-    try:
-        completed = await asyncio.to_thread(  # 阻塞调用放线程池，不卡事件循环
-            subprocess.run,
-            argv,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_seconds,
-            cwd=str(script.parent),
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return (
-            f"[脚本执行超时] {record.name}/scripts/{script.name} 超过 {timeout_seconds} 秒被终止；"
-            "可在 frontmatter 调大 script_timeout 或优化脚本"
-        )
-    except OSError as exc:
-        return f"[工具执行失败] 无法启动脚本进程：{exc}"
-
-    merged = (completed.stdout or "") + (completed.stderr or "")
-    if len(merged) > max_output_chars:
-        merged = merged[:max_output_chars] + f"\n…（输出超长，已截断至 {max_output_chars} 字符）"
-    status = "exit 0" if completed.returncode == 0 else f"exit {completed.returncode}"
-    if not merged.strip():
-        return f"（脚本无输出，{status}）"
-    return f"[{status}]\n{merged}"
+    # 阻塞调用放线程池；环境白名单 + 进程树超时 + 输出封顶由 run_argv_core 统一处理
+    return await asyncio.to_thread(
+        run_argv_core,
+        argv,
+        cwd=script.parent,
+        timeout=timeout_seconds,
+        max_chars=max_output_chars,
+        label=f"{record.name}/scripts/{script.name}",
+    )
 
 
 __all__ = ["resolve_script_path", "run_skill_script"]

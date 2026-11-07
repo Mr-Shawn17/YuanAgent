@@ -16,6 +16,7 @@ import websockets
 
 from runner import __version__
 from runner.auth import get_token
+from runner.command import COMMAND_TOOLS, CommandRunner
 from runner.config import RunnerConfig
 from runner.executor import execute_tool
 from runner.protocol import ToolRequest, WorkspaceInfo, WorkspacesMessage
@@ -55,6 +56,7 @@ class RunnerConnection:
         self._token = token
         self._workspace = workspace
         self._cache = ResultCache()
+        self._commands = CommandRunner(config.command)
         # 心跳：每 interval 发 ping 且 missed+1；收到 pong 清零；连续 3 次未清零断开
         self._missed_pongs = 0
         self._tasks: set[asyncio.Task[None]] = set()
@@ -68,7 +70,16 @@ class RunnerConnection:
             max_size=16 * 1024 * 1024,
             ping_interval=None,  # 心跳自管（应用层 ping/pong）
         ) as ws:
-            await ws.send(json.dumps({"type": "hello", "client": CLIENT_ID}))
+            # 附带命令执行档位上报（服务端不需要则忽略该字段）
+            try:
+                backend_name = self._commands.backend.name
+            except Exception:
+                backend_name = "shell"
+            await ws.send(
+                json.dumps(
+                    {"type": "hello", "client": CLIENT_ID, "command_backend": backend_name}
+                )
+            )
             # 握手后上报本机可用工作目录列表（网页下拉用）
             await self._send_workspaces(ws)
             stop = asyncio.Event()
@@ -159,9 +170,17 @@ class RunnerConnection:
             # 工具请求可指定 workspace（会话绑定目录）；为空回退连接默认目录。
             # 目标目录由执行器侧做沙箱兜底校验（_prepare_workspace 确保存在）。
             workspace = self._resolve_workspace(request.workspace)
-            output = await asyncio.to_thread(
-                execute_tool, workspace, request.tool, dict(request.args)
-            )
+            if request.tool in COMMAND_TOOLS:
+                # 命令类工具：事件循环内直接跑（后端自身是异步的），
+                # 外层强制超时（协议字段，宽限 15s 覆盖进程树清理耗时）。
+                output = await asyncio.wait_for(
+                    self._commands.execute(request.tool, dict(request.args), workspace),
+                    timeout=max(request.timeout_seconds, 30.0) + 15.0,
+                )
+            else:
+                output = await asyncio.to_thread(
+                    execute_tool, workspace, request.tool, dict(request.args)
+                )
             self._cache.put(request.request_id, output)
             logger.info(
                 "tool_done tool=%s workspace=%s request=%s output_len=%d",

@@ -16,7 +16,7 @@
 | CLI 管理 | ✅ `/skills` 斜杠命令 + 启动头部技能清单 |
 | 示例技能 | ✅ `skills/weekly-report/`（含 gen_skeleton.py 脚本） |
 | 测试 | ✅ `tests/unit/test_skills.py`（31 用例：解析/扫描/工具/沙箱/中间件/装配） |
-| 遗留 | ⚠️ 脚本沙箱为「审批 + 超时 + 输出封顶」多层防护，非容器级隔离；多用户场景需升级 |
+| 遗留 | ⚠️ 脚本沙箱为「审批 + 超时 + 输出封顶」多层防护，非容器级隔离；多用户场景需升级 → **env 全量继承与进程树问题已修**（脚本子进程改走 `run_argv_core`：环境白名单 + psutil 杀树） |
 
 > 原 §二 第 2 项（danger 档空占位）已闭环：`execute_skill_script` 成为 danger 档首个成员，复用现有审批链路。
 
@@ -61,6 +61,7 @@
 `default_user_id = "me"` 全局单值，无登录、无鉴权、无用户隔离；Web 端点无认证，任何能访问 8000 端口者均可调用。这是从「个人工具」走向「可交付产品」的最大鸿沟。
 
 - 涉及：`backend/app/core/config.py`（default_user_id）、`backend/app/api/`（无 auth）
+- **token 经济分层已定**（2026-11 沙箱升级讨论结论）：固化流程（聊天/技能/文件操作）走服务端共用 key + 网页操作；**编程类重任务（`delegate_coding`）委派各用户本机 codex CLI，token 走各自账号**，避免多用户吃同一个服务端 key。备选方案（runner 内置迷你编程循环、个人 key 直连模型厂商）见 docs/decisions-sandbox.md 讨论
 
 ### 6. 观测与可运维性偏弱
 有 `TelemetryMiddleware`（打点延迟/token）、`tool_audit` 审计、structlog 日志，但无集中 metrics 导出（Prometheus）、无告警、无 tracing；`messages` 表的 `tokens_in/tokens_out` 字段缺少聚合看板。

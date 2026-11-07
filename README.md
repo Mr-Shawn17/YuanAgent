@@ -239,16 +239,19 @@ python -m runner run
 
 执行器离线时仍可聊天，文件操作返回 `[local_runner_offline]` 提示文本，不会中断对话。绑定接口为 `PUT /v1/sessions/{id}/workspace`，会话列表 `GET /v1/sessions` 返回各自绑定的 `workspace`。
 
-### 安全模型（非容器级隔离）
+### 安全模型（命令沙箱 + 可选 VM 档）
 
 - **设备令牌鉴权**：`secrets.token_urlsafe(32)`，库内只存 SHA-256，可吊销（`device revoke <id>`）
 - **传输**：WSS 长连接，执行器主动外连（无需在用户电脑开端口）
 - **路径沙箱**：执行器侧对每个 workspace 做 `is_relative_to` 越界检查，`../` 与绝对路径一律拒绝
-- **工具白名单**：执行器侧硬编码只认 `read_file` / `write_file` / `list_directory` 三个工具
-- **审批 + 审计**：write 档仍在中心服务弹审批窗，批准后下发；`tool_audit` 全量落库
+- **工具白名单**：执行器侧硬编码只认 `read_file` / `write_file` / `list_directory` + 命令类 `run_command` / `delegate_coding` / `git_clone|pull|push`
+- **命令沙箱**（`run_command`，danger 档）：命令白名单（多命令段逐段校验）+ 危险模式黑名单 + **环境变量白名单（绝不透传 API key）** + 超时杀整棵进程树 + 输出封顶
+- **VM 档（可选）**：`command.backend: auto` 时若 Windows 沙盒功能已启用（Win Pro），命令在一次性 VM 中执行（workspace 映射进出、便携工具链注入 PATH），未启用则回退策略层
+- **git 凭证托管**：私有仓库 PAT 存用户电脑系统凭据库（`python -m runner set-git-cred <host>`），命令由 runner 拼装、`GIT_ASKPASS` 注入，凭证不进模型上下文/命令行/输出
+- **审批 + 审计**：write/danger 档在中心服务弹审批窗，批准后下发；`tool_audit` 全量落库
 - **单实例锁**：重复双击执行器直接退出新进程
 
-⚠️ 这是「白名单 + 路径约束 + 人工审批」的软件层防护，不是操作系统级沙箱；执行器以当前登录用户普通权限运行，文件权限即该用户账户权限。
+⚠️ 默认（策略层）是「白名单 + 路径约束 + 人工审批」的软件层防护；需要系统级隔离时启用 Windows 沙盒功能走 VM 档（详见 `docs/local-runner.md` §13）。
 
 ## 配置说明
 

@@ -227,6 +227,49 @@ python -m runner run        # 或双击 dist/YuanRunner/YuanRunner.exe
 ## 12. 二期展望（不在本期）
 
 - 多用户登录 + 按用户路由到各自执行器（hub 已按 user_id 建键，扩展点就绪）
-- CLI 命令执行工具（白名单 + 超时 + 输出封顶）
+- ~~CLI 命令执行工具（白名单 + 超时 + 输出封顶）~~ → **已落地，见 §13 命令沙箱**
 - 本地 MCP Server 经执行器代理接入
 - 托盘图标与开机自启引导
+- WSL / Docker 命令后端（接口已预留，`CommandBackend` 协议新增实现即可）
+- SSH git 认证（当前 HTTPS + PAT）
+
+## 13. 命令沙箱（已落地）
+
+### 13.1 工具清单（全部 danger 档 + mode: local，经审批/审计链路）
+
+| 工具 | 用途 | 实现 |
+|---|---|---|
+| `run_command` | 工作目录内执行 CLI 命令 | 策略层 + 命令后端 |
+| `delegate_coding` | 编程任务整段委派本机 codex CLI | `runner/coding.py`（用户自己的 codex 账号） |
+| `git_clone` / `git_pull` / `git_push` | 私有仓库拉取/推送（凭证托管） | `runner/gitops.py` |
+| （git add/commit/status 等） | 无专用工具，模型经 `run_command` 执行 | — |
+
+### 13.2 架构分层
+
+- `runner/command.py`：`CommandBackend` 协议 + 共用策略层——命令白名单（多命令段 `&&`/管道逐段查首 token）+ 危险模式黑名单（rm -rf 根目录 / del /s / format / reg / powershell -enc / taskkill /f 等）+ cwd 钉死 workspace（`resolve_in_sandbox`）+ **环境变量白名单**（敏感名二次过滤，绝不透传 API key）+ 超时 psutil 杀整棵进程树 + 输出封顶
+- `runner/backends/shell.py`：ShellBackend（默认档，cmd.exe /d /c，零依赖）
+- `runner/backends/windows_sandbox.py`：WindowsSandboxBackend（**VM 档**）——动态生成 .wsb（workspace 可写映射 `C:\ws` + bridge 与工具链只读映射）、沙箱内 PowerShell bridge 轮询映射文件夹任务队列、宿主 200ms 轮询取结果；会话懒启动、workspace 变化重建、空闲 10 分钟回收
+- `runner/sandbox_tools.py`：便携工具链（PortableGit / python embeddable / node，npmmirror 镜像一次性下载到 `%LOCALAPPDATA%\YuanAgent\sandbox-tools\`，bridge 注入 PATH；也可手动放置并自建 `.ready` 跳过下载）
+- backend 侧（CLI 场景直跑）：`backend/app/tools/builtin/shell.py|coding.py|gitops.py`，与 runner **同规则复制**（改动双向同步）
+
+### 13.3 后端选择（runner.yaml `command.backend`）
+
+- `auto`（默认）：Windows 沙盒功能已启用 → VM 档；否则策略层直跑
+- `shell`：强制策略层
+- `windows_sandbox`：强制 VM 档；功能未启用时**报错不静默降级**（避免误以为在 VM 中执行）
+
+启用 Windows 沙盒：「启用或关闭 Windows 功能」勾选「Windows 沙盒」并重启（需 Win Pro+）。
+
+### 13.4 git 私有仓库认证
+
+- 凭证录入：`python -m runner set-git-cred github.com`（交互输入用户名 + PAT，存系统凭据管理器，仅本机）
+- clone 按地址取 host 查凭证；pull/push 自动从 `remote.origin.url` 推断 host
+- 凭证经 `GIT_ASKPASS` 临时脚本以环境变量注入（命令由 runner 拼装，LLM 只提供地址/分支）；PAT 从回传输出剥离；URL 字符白名单校验防注入
+- **凭证永不进入**：模型上下文、命令行文本、工具输出、审计参数、服务端
+
+### 13.5 已知边界
+
+- VM 档映射文件夹小文件 I/O 慢（`npm install` 级操作明显变慢）；映射目录之外的宿主文件对沙箱不可见（隔离设计如此）
+- git 凭证经任务 json 在映射文件夹短暂明文落盘（用后即删；本机磁盘级威胁不在模型内）
+- VM 档会话绑定单一 workspace，变化即重建（启动约 10~20s）
+- 沙箱为干净系统：宿主已装工具链不可见，依赖便携工具链（见 13.2）
