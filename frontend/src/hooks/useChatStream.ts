@@ -18,6 +18,14 @@ function nextId(): string {
   return `m${Date.now().toString(36)}_${seq}`;
 }
 
+function newSessionId(): string {
+  // 客户端预生成会话 id，使新会话在发送前即可绑定工作目录
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function emptyAssistant(id: string): ChatMessage {
   return {
     id,
@@ -41,6 +49,7 @@ function emptyAssistant(id: string): ChatMessage {
 export function useChatStream() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [sessionId, setSessionId] = useState("");
+  const [workspace, setWorkspace] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   const [busy, setBusy] = useState(false);
@@ -61,6 +70,9 @@ export function useChatStream() {
 
   useEffect(() => {
     void refreshSessions();
+    // 初始化即生成一个会话 id，保证「发送前绑定工作目录」始终有合法目标，
+    // 否则 sessionId 为空时绑定向 /v1/sessions//workspace 会 404
+    setSessionId((cur) => cur || newSessionId());
   }, [refreshSessions]);
 
   /** 单帧 → 状态更新（纯函数式，避免在 updater 里做副作用） */
@@ -373,6 +385,8 @@ export function useChatStream() {
       setSessionId(id);
       setPendingApproval(null);
       setFatalError("");
+      // 回填该会话绑定的工作目录（从会话列表里取，若无则空）
+      setWorkspace(sessions.find((s) => s.thread_id === id)?.workspace ?? "");
       try {
         const history = await fetchSessionMessages(id);
         setMessages(
@@ -392,20 +406,31 @@ export function useChatStream() {
         setFatalError(e instanceof Error ? e.message : String(e));
       }
     },
-    [busy],
+    [busy, sessions],
   );
 
   const newSession = useCallback(() => {
     if (busy) return;
-    setSessionId("");
+    setSessionId(newSessionId());
+    setWorkspace("");
     setMessages([]);
     setPendingApproval(null);
     setFatalError("");
   }, [busy]);
 
+  /** 绑定/切换工作目录后更新本地状态（持久化已在 api 层完成） */
+  const bindWorkspace = useCallback((path: string) => {
+    setWorkspace(path);
+    // 同步更新会话列表里该会话的 workspace，保证下次切换回填正确
+    setSessions((prev) =>
+      prev.map((s) => (s.thread_id === sessionId ? { ...s, workspace: path } : s)),
+    );
+  }, [sessionId]);
+
   return {
     sessions,
     sessionId,
+    workspace,
     messages,
     pendingApproval,
     busy,
@@ -414,5 +439,6 @@ export function useChatStream() {
     approve,
     selectSession,
     newSession,
+    bindWorkspace,
   };
 }

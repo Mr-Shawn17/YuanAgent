@@ -30,6 +30,7 @@ from app.agents.builder import thread_config
 from app.agents.state import initial_state_fields
 from app.api.deps import get_runtime
 from app.api.graph_aggregator import ExecutionGraphAggregator
+from app.api.routes_sessions import WORKSPACE_META_KEY
 from app.api.runtime import AgentRuntime, make_web_approval
 from app.api.schemas import ApproveRequest, ChatRequest
 from app.api.sse import SSE_HEADERS, sse_event, with_heartbeat
@@ -59,6 +60,22 @@ def text_of(content: Any) -> str:
                 parts.append(block["text"])
         return "".join(parts)
     return ""
+
+
+async def _load_session_workspace(runtime: AgentRuntime, session_id: str) -> str:
+    """读会话绑定的工作目录；数据库不可用 / 会话不存在 / 未绑定 返回空串。"""
+    if runtime.database is None or not session_id:
+        return ""
+    try:
+        async with runtime.database.session() as session:
+            record = await SessionRepo(session).get_session(session_id)
+            if record is None:
+                return ""
+            meta = record.meta or {}
+            return str(meta.get(WORKSPACE_META_KEY, "")) if isinstance(meta, dict) else ""
+    except Exception:
+        logger.warning("load_session_workspace_failed", session_id=session_id, exc_info=True)
+        return ""
 
 
 def error_payload(exc: Exception) -> dict[str, Any]:
@@ -228,10 +245,13 @@ async def _stream_run(
     unsubscribe = bus.subscribe(_on_event)
     # 事件日志：工具调用 / 子 Agent 拆分等关键事件统一落运行日志（供事后排查）
     unsubscribe_event_log = bus.subscribe(make_event_logger(session_id=session_id, user_id=user_id))
+    # 读会话绑定的工作目录（供文件工具 local 模式携带；未绑定/读失败为空串）
+    workspace = await _load_session_workspace(runtime, session_id)
     agent, permission_mw = runtime.build_run_agent(
         session_id=session_id,
         event_bus=bus,
         approval=make_web_approval(),
+        workspace=workspace,
     )
     config = thread_config(session_id)
     # Langfuse 可观测：把 CallbackHandler 挂到 config.callbacks，整条链自动捕获为嵌套 trace。

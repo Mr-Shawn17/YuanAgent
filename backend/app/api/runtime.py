@@ -26,6 +26,7 @@ from langgraph.types import interrupt
 
 from app.agents.builder import build_agent
 from app.agents.subagents import apply_routing, load_routing_config, routing_note
+from app.api.local_hub import LocalTaskHub
 from app.core.config import AgentFileConfig, Settings
 from app.core.events import EventBus
 from app.core.logging import get_logger
@@ -175,6 +176,7 @@ class AgentRuntime:
     runs: RunRegistry = field(default_factory=RunRegistry)
     extract_tasks: set[asyncio.Task[None]] = field(default_factory=set)
     extractor: MemoryExtractor | None = None
+    local_hub: LocalTaskHub = field(default_factory=LocalTaskHub)
 
     def __post_init__(self) -> None:
         if self.extractor is None:
@@ -183,6 +185,8 @@ class AgentRuntime:
                 user_id=self.settings.default_user_id,
                 model=self.fast_model,
             )
+        # 对齐 settings 的下发超时配置（hub 默认 120s，可用 local_dispatch_timeout 覆盖）
+        self.local_hub.set_dispatch_timeout(self.settings.local_dispatch_timeout)
 
     @property
     def user_id(self) -> str:
@@ -194,6 +198,7 @@ class AgentRuntime:
         session_id: str,
         event_bus: EventBus,
         approval: ApprovalCallback | None,
+        workspace: str = "",
     ) -> tuple[Any, ToolPermissionMiddleware]:
         """按请求装配一个 agent（中间件顺序与 CLI 完全一致），返回 (agent, 权限中间件)。"""
         user_id = self.user_id
@@ -206,7 +211,13 @@ class AgentRuntime:
             store=self.store,
             event_bus=event_bus,
             skill_catalog=skill_catalog,
+            workspace=workspace,
         )
+        # 文件工具 local 模式：任务经 hub 转发到该用户的本地执行器。
+        # 必须在 build_tools 之前注入——文件工具工厂在装配期就据
+        # context.local_router 判定 use_local，之后注入会让 mode=local 退化为 server 直连。
+        if self.settings.local_runner_enabled:
+            tool_context.local_router = self.local_hub
         registry = build_tools(tool_context)
         registry.tools.extend(self.mcp_tools)
         registry.tiers.update(self.mcp_tiers)
@@ -311,6 +322,7 @@ class AgentRuntime:
 
     async def shutdown(self) -> None:
         """服务关停前等待在途抽取任务，超时则取消（消息在 checkpoint 里，不丢）。"""
+        await self.local_hub.aclose()
         pending = {task for task in self.extract_tasks if not task.done()}
         if pending:
             _, unfinished = await asyncio.wait(pending, timeout=EXTRACTION_FLUSH_TIMEOUT)

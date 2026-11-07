@@ -118,6 +118,15 @@ runtime:
   # ===== 工具依赖的第三方 Key（留空则该工具自动禁用）=====
   tavily_api_key: ""          # 留空回退环境变量 TAVILY_API_KEY
 
+  # ===== 本地执行器（Local Runner）任务转发 =====
+  # 文件工具（tools.yaml 里 mode: local）经 /ws/runner 转发到用户电脑上的 YuanRunner。
+  # local_runner_enabled     总开关；false 时文件工具直接读写服务器沙箱（旧行为）
+  # local_dispatch_timeout   单次任务下发+等待结果的全流程超时（秒）
+  # local_heartbeat_seconds  心跳间隔；执行器连续 3 次未收 pong 判定断线重连
+  local_runner_enabled: true
+  local_dispatch_timeout: 120
+  local_heartbeat_seconds: 30
+
   # ===== Langfuse 可观测（自托管；trace_id 追踪 + Prompt 版本化）=====
   # enabled       总开关；false 时 Langfuse 完全关闭（优雅降级为 no-op，不影响对话）
   # host          Langfuse 自托管面板地址（deploy/langfuse 部署，Web 端口 3030）

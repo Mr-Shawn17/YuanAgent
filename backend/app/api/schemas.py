@@ -29,6 +29,13 @@ class SessionInfo(BaseModel):
     updated_at: str
     message_count: int
     title: str
+    workspace: str = ""
+
+
+class WorkspaceBindRequest(BaseModel):
+    """PUT /v1/sessions/{id}/workspace 请求体。"""
+
+    workspace: str
 
 
 class SessionMessage(BaseModel):
@@ -63,4 +70,5 @@ __all__ = [
     "OpenAIMessage",
     "SessionInfo",
     "SessionMessage",
+    "WorkspaceBindRequest",
 ]

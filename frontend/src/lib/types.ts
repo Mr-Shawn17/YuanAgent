@@ -96,6 +96,14 @@ export interface SessionInfo {
   updated_at: string;
   message_count: number;
   title: string;
+  workspace?: string;
+}
+
+/** GET /v1/workspaces 单条可用工作目录 */
+export interface WorkspaceOption {
+  path: string;
+  name: string;
+  kind: string;
 }
 
 /** GET /v1/sessions/{id}/messages 回放消息 */

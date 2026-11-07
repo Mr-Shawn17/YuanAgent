@@ -1,5 +1,5 @@
 // API 访问层：手写 fetch + ReadableStream 的 SSE 解析（EventSource 不支持 POST）
-import type { SessionInfo, SessionMessage, SseFrame } from "./types";
+import type { SessionInfo, SessionMessage, SseFrame, WorkspaceOption } from "./types";
 
 // 后端轻量鉴权：X-API-Key 头。密钥从 NEXT_PUBLIC_API_KEY 注入（浏览器可见，
 // 对个人工具定位够用——真正挡住的是绕过前端直接打后端 8000 端口的外部请求）。
@@ -83,4 +83,25 @@ export async function fetchSessionMessages(sessionId: string): Promise<SessionMe
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = (await res.json()) as { messages: SessionMessage[] };
   return data.messages ?? [];
+}
+
+/** 拉取在线执行器上报的可用工作目录（网页下拉用） */
+export async function listWorkspaces(): Promise<WorkspaceOption[]> {
+  const res = await fetch("/v1/workspaces", { cache: "no-store", headers: apiHeaders() });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = (await res.json()) as { workspaces: WorkspaceOption[] };
+  return data.workspaces ?? [];
+}
+
+/** 绑定/更新会话的工作目录 */
+export async function bindSessionWorkspace(
+  sessionId: string,
+  workspace: string,
+): Promise<void> {
+  const res = await fetch(`/v1/sessions/${encodeURIComponent(sessionId)}/workspace`, {
+    method: "PUT",
+    headers: apiHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ workspace }),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
 }

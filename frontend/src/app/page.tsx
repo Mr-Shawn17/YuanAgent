@@ -7,12 +7,14 @@ import ApprovalModal from "@/components/ApprovalModal";
 import Composer from "@/components/Composer";
 import MessageBubble from "@/components/MessageBubble";
 import SessionSidebar from "@/components/SessionSidebar";
+import WorkspacePicker from "@/components/WorkspacePicker";
 import { useChatStream } from "@/hooks/useChatStream";
 
 export default function Home() {
   const {
     sessions,
     sessionId,
+    workspace,
     messages,
     pendingApproval,
     busy,
@@ -21,6 +23,7 @@ export default function Home() {
     approve,
     selectSession,
     newSession,
+    bindWorkspace,
   } = useChatStream();
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -41,6 +44,14 @@ export default function Home() {
       <section className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-2.5">
           <h1 className="text-sm font-semibold text-slate-700">阿元 · 日常聊天 Agent</h1>
+          <div className="ml-4 flex items-center gap-2">
+            <WorkspacePicker
+              sessionId={sessionId}
+              currentWorkspace={workspace}
+              busy={busy}
+              onBound={bindWorkspace}
+            />
+          </div>
           <span className="ml-auto truncate font-mono text-[11px] text-slate-400">
             {sessionId ? `会话 ${sessionId.slice(0, 8)}` : "新会话（发送后自动创建）"}
           </span>

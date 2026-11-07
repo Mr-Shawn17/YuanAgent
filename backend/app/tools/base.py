@@ -5,7 +5,7 @@ import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast, runtime_checkable
 
 from langchain_core.tools import BaseTool
 from langgraph.store.base import BaseStore
@@ -55,6 +55,12 @@ class ToolContext:
     event_bus: EventBus | None = None
     # 技能目录（skills 功能开启时由装配方注入，skill 工具据此装配/禁用）
     skill_catalog: SkillCatalog | None = None
+    # 本地执行器路由（API 场景注入）：文件工具 mode=local 时经它转发到用户电脑。
+    # None（CLI 场景）时 local 模式退化为直接读本机沙箱——CLI 进程本就在用户机器上。
+    local_router: LocalRouter | None = None
+    # 当前会话绑定的工作目录（绝对路径）；local 模式转发时随任务下发，
+    # 空串表示未绑定，执行器回退到连接默认目录。
+    workspace: str = ""
 
     def sandbox(self) -> Path:
         """文件类工具的沙箱根目录（绝对路径）。"""
@@ -64,6 +70,25 @@ class ToolContext:
 
 # 工具工厂协议：返回 None 表示依赖缺失、由 registry 记录禁用原因
 ToolFactory = Callable[[ToolContext, ToolEntryConfig], BaseTool | None]
+
+
+@runtime_checkable
+class LocalRouter(Protocol):
+    """文件工具 local 模式的转发协议（实现方：api.local_hub.LocalTaskHub）。
+
+    返回值是给模型看的文本：成功为工具输出，失败为带前缀的错误说明，
+    实现方保证不抛异常（工具错误边界兜底后返回给模型）。
+    """
+
+    async def dispatch(
+        self,
+        *,
+        user_id: str,
+        tool: str,
+        args: dict[str, Any],
+        workspace: str = "",
+        timeout: float | None = None,  # noqa: ASYNC109
+    ) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +159,7 @@ __all__ = [
     "MAX_READ_LIMIT",
     "AppError",
     "BuiltinToolSpec",
+    "LocalRouter",
     "ToolContext",
     "ToolEntryConfig",
     "ToolFactory",

@@ -101,6 +101,23 @@ class Message(Base):
     )
 
 
+class Device(Base):
+    """本地执行器设备：设备令牌只存哈希，原文仅在签发时显示一次。
+
+    user_id 当前为单用户默认值，多用户登录体系上线后按真实账号归属。
+    """
+
+    __tablename__ = "devices"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid7)
+    user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
 class ToolAudit(Base):
     """工具调用审计：安全矩阵的落地凭证，read/write/danger 全量记录。"""
 
@@ -130,6 +147,7 @@ __all__ = [
     "ROLE_TOOL",
     "ROLE_USER",
     "Base",
+    "Device",
     "Message",
     "Session",
     "ToolAudit",
