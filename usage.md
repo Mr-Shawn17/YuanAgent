@@ -339,11 +339,32 @@ python -m runner run
 | 设备令牌鉴权 | `secrets.token_urlsafe(32)`（`yrt_` 前缀），库内只存 SHA-256，可吊销 |
 | 传输 | WSS 长连接，执行器主动外连，无需在用户电脑开端口 |
 | 路径沙箱 | 执行器对每个 workspace 做 `is_relative_to` 越界检查，`../` 与绝对路径一律拒绝 |
-| 工具白名单 | 执行器侧只认 `read_file` / `write_file` / `list_directory` 三个工具 |
-| 审批 + 审计 | write 档仍在中心服务弹审批窗，批准后下发；`tool_audit` 全量落库 |
+| 工具白名单 | 执行器侧硬编码只认 7 个工具：文件三件套 + 开发四件套（见 6.6），未知工具一律拒绝 |
+| 审批 + 审计 | write/danger 档在中心服务弹审批窗，批准后下发；`tool_audit` 全量落库 |
 | 单实例锁 | 重复双击执行器直接退出新进程 |
 
-⚠️ 这是「白名单 + 路径约束 + 人工审批」的**软件层防护**，不是操作系统级沙箱；执行器以当前登录用户普通权限运行，文件权限即该用户账户权限。当前**不含任意 CLI 命令执行**能力（唯一会跑进程的是技能脚本 `execute_skill_script`，走 danger 档审批）。
+⚠️ 这是「白名单 + 路径约束 + 人工审批」的**软件层防护**，不是操作系统级沙箱；执行器以当前登录用户普通权限运行，文件权限即该用户账户权限。平台**不提供任意 CLI 命令执行**——会跑进程的只有：技能脚本（danger 档审批）与开发四件套（命令由 runner 固定模板拼装，模型只能传结构化参数，见 6.6）。
+
+### 6.6 开发工作流四件套（拉取 → 改代码 → 推回）
+
+> 四个工具全部 danger 档，每次执行前网页弹审批，全程对沙箱无感（无弹窗、无提权、无 VM）。
+
+| 工具 | 干什么 | 命令由谁拼 |
+| --- | --- | --- |
+| `git_clone` | 克隆仓库到工作目录；同名仓库已存在则 `git pull` 更新（幂等） | runner 固定 argv |
+| `install_deps` | 按清单装依赖：`uv sync` / `pip install -r` / `npm ci` / `npm install` | runner 固定模板 |
+| `delegate_coding` | 把编程任务整段委派给本机 codex CLI（workspace-write 模式、用户自己的账号） | codex 自己 |
+| `git_commit_push` | `add -A + commit + push`，只推回 clone 时登记的远程与分支 | runner 固定 argv |
+
+**一次性准备（开发同事电脑上）：**
+
+```bash
+npm install -g @openai/codex   # 安装 codex CLI 并登录/配置 provider
+# 私有仓库时录入 PAT（进系统凭据库，不进模型上下文）：
+python -m runner set-git-cred github.com --username <你的用户名>
+```
+
+**安全要点**：模型永远只传结构化参数（repo_url / message / task），命令行由 runner 固定拼装，不存在自由命令；git 凭证经 `GIT_ASKPASS` 注入并从回传输出中剥离 PAT；推送只能推回 clone 登记的 remote。codex 的沙箱只是附加保险，平台安全支柱是"结构化收口 + danger 审批 + 审计"。
 
 ---
 

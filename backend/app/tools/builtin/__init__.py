@@ -3,11 +3,14 @@ from __future__ import annotations
 from app.rag.kb_tool import make_kb_tool
 from app.tools.base import BuiltinToolSpec
 from app.tools.builtin.calculator import make_calculator_tool
+from app.tools.builtin.coding import make_delegate_coding_tool
+from app.tools.builtin.deps import make_install_deps_tool
 from app.tools.builtin.filesystem import (
     make_list_directory_tool,
     make_read_file_tool,
     make_write_file_tool,
 )
+from app.tools.builtin.gitops import make_git_clone_tool, make_git_commit_push_tool
 from app.tools.builtin.memory import make_remember_tool
 from app.tools.builtin.skill import make_execute_skill_script_tool, make_load_skill_tool
 from app.tools.builtin.time_tool import make_time_tool
@@ -29,12 +32,21 @@ BUILTIN_TOOL_SPECS: dict[str, BuiltinToolSpec] = {
     "search_knowledge_base": BuiltinToolSpec(make_kb_tool, "read"),
     "load_skill": BuiltinToolSpec(make_load_skill_tool, "read"),
     "execute_skill_script": BuiltinToolSpec(make_execute_skill_script_tool, "danger"),
+    # 开发工作流四件套（docs/codex-integration.md）：命令在用户本机 runner 固定拼装
+    "git_clone": BuiltinToolSpec(make_git_clone_tool, "danger"),
+    "git_commit_push": BuiltinToolSpec(make_git_commit_push_tool, "danger"),
+    "install_deps": BuiltinToolSpec(make_install_deps_tool, "danger"),
+    "delegate_coding": BuiltinToolSpec(make_delegate_coding_tool, "danger"),
 }
 
 __all__ = [
     "BUILTIN_TOOL_SPECS",
     "make_calculator_tool",
+    "make_delegate_coding_tool",
     "make_execute_skill_script_tool",
+    "make_git_clone_tool",
+    "make_git_commit_push_tool",
+    "make_install_deps_tool",
     "make_kb_tool",
     "make_list_directory_tool",
     "make_load_skill_tool",

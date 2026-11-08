@@ -244,11 +244,11 @@ python -m runner run
 - **设备令牌鉴权**：`secrets.token_urlsafe(32)`，库内只存 SHA-256，可吊销（`device revoke <id>`）
 - **传输**：WSS 长连接，执行器主动外连（无需在用户电脑开端口）
 - **路径沙箱**：执行器侧对每个 workspace 做 `is_relative_to` 越界检查，`../` 与绝对路径一律拒绝
-- **工具白名单**：执行器侧硬编码只认 `read_file` / `write_file` / `list_directory` 三个工具
-- **审批 + 审计**：write 档仍在中心服务弹审批窗，批准后下发；`tool_audit` 全量落库
+- **工具白名单**：执行器侧硬编码只认 7 个工具——文件三件套 + 开发四件套（`git_clone` / `install_deps` / `delegate_coding` / `git_commit_push`）
+- **审批 + 审计**：write/danger 档在中心服务弹审批窗，批准后下发；`tool_audit` 全量落库
 - **单实例锁**：重复双击执行器直接退出新进程
 
-⚠️ 这是「白名单 + 路径约束 + 人工审批」的软件层防护，不是操作系统级沙箱；执行器以当前登录用户普通权限运行，文件权限即该用户账户权限。
+⚠️ 这是「白名单 + 路径约束 + 人工审批」的软件层防护，不是操作系统级沙箱；执行器以当前登录用户普通权限运行，文件权限即该用户账户权限。开发四件套的命令由 runner 固定 argv 模板拼装（模型只能传结构化参数，无自由命令），git 凭证存系统凭据库经 `GIT_ASKPASS` 注入、PAT 不进模型上下文与回传输出，`git_commit_push` 只能推回 clone 时登记的远程；codex 委派的 workspace-write 沙箱是附加保险而非安全支柱（Windows 上已实测有 OS 级文件写/网络强制），残余风险由 danger 档任务级审批与审计兜底。
 
 ## 配置说明
 
@@ -266,7 +266,7 @@ python -m runner run
 | -------- | ------------- | ------------------------------------------------------- |
 | `read`   | 直接执行，仅审计      | 时间、计算器、联网搜索、读文件、知识库检索、`load_skill`、全部 MCP 工具、`delegate_to_research`  |
 | `write`  | 执行前需审批        | `write_file`、`remember`、`delegate_to_coding`（批准一次即整体授权） |
-| `danger` | 执行前需审批（更醒目提示） | `execute_skill_script`（技能脚本执行）                      |
+| `danger` | 执行前需审批（更醒目提示） | `execute_skill_script`（技能脚本执行）、`git_clone` / `install_deps` / `delegate_coding` / `git_commit_push`（开发四件套） |
 
 ## HTTP API
 

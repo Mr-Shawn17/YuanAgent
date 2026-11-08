@@ -1,19 +1,24 @@
-"""三件套执行器：read_file / write_file / list_directory + 沙箱越界检查。
+"""执行器：文件三件套 + 开发工具四件套（git/依赖/codex 委派）+ 沙箱越界检查。
 
 与主项目 backend/app/tools/base.py 的 resolve_in_sandbox 同款规则：
 拼接沙箱根后 resolve，is_relative_to 包含检查拒绝 ../ 与绝对路径逃逸。
 工具白名单硬编码，未知工具名直接拒绝（中心侧新增工具不会静默穿透）。
+开发工具的命令由 runner/gitops|deps|coding.py 固定模板拼装（docs/codex-integration.md）。
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from runner.config import RunnerConfig
+
 MAX_LIST_ENTRIES = 200
 DEFAULT_READ_LIMIT = 20_000
 MAX_READ_LIMIT = 200_000
 WRITE_MODES = ("overwrite", "append", "delete")
-ALLOWED_TOOLS = frozenset({"read_file", "write_file", "list_directory"})
+FILE_TOOLS = frozenset({"read_file", "write_file", "list_directory"})
+DEV_TOOLS = frozenset({"git_clone", "git_commit_push", "install_deps", "delegate_coding"})
+ALLOWED_TOOLS = FILE_TOOLS | DEV_TOOLS
 
 
 class SandboxEscapeError(Exception):
@@ -92,10 +97,34 @@ def write_file(root: Path, path: str, content: str, mode: str = "overwrite") -> 
     return f"已写入 {len(content)} 个字符到 {_relative(root, target)}"
 
 
-def execute_tool(root: Path, tool: str, args: dict[str, object]) -> str:
-    """统一入口：白名单校验 + 分发。异常不在此捕获（调用方统一转错误结果）。"""
+def execute_tool(
+    root: Path, tool: str, args: dict[str, object], config: RunnerConfig | None = None
+) -> str:
+    """统一入口：白名单校验 + 分发。异常不在此捕获（调用方统一转错误结果）。
+
+    开发工具需要 config（connection 接线时传入）；缺失时返回可读错误而非崩溃。
+    """
     if tool not in ALLOWED_TOOLS:
         raise ValueError(f"工具不在执行器白名单内：{tool}")
+    if tool in DEV_TOOLS:
+        # 延迟导入：gitops/deps/coding 反向依赖本模块的 resolve_in_sandbox，顶层互导成环
+        if config is None:
+            return "[配置缺失] 开发工具需要 RunnerConfig（执行器接线异常）"
+        if tool == "git_clone":
+            from runner.gitops import run_git_clone
+
+            return run_git_clone(root, args, config)
+        if tool == "git_commit_push":
+            from runner.gitops import run_git_commit_push
+
+            return run_git_commit_push(root, args, config)
+        if tool == "install_deps":
+            from runner.deps import run_install_deps
+
+            return run_install_deps(root, args, config)
+        from runner.coding import run_codex_task
+
+        return run_codex_task(args, root, config)
     if tool == "read_file":
         return read_file(
             root,
@@ -114,6 +143,8 @@ def execute_tool(root: Path, tool: str, args: dict[str, object]) -> str:
 
 __all__ = [
     "ALLOWED_TOOLS",
+    "DEV_TOOLS",
+    "FILE_TOOLS",
     "SandboxEscapeError",
     "execute_tool",
     "list_directory",

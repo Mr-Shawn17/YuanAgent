@@ -78,6 +78,30 @@ def _cmd_clear_token(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_set_git_cred(args: argparse.Namespace) -> int:
+    """保存 git HTTPS 凭证（用户名 + PAT）到系统凭据库，供 git 工具注入。"""
+    import getpass
+
+    from runner.gitops import set_git_cred
+
+    pat = (args.pat or "").strip() or getpass.getpass(f"{args.host} 的 PAT（输入不回显）：")
+    try:
+        set_git_cred(args.host, args.username, pat)
+    except ValueError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 1
+    print(f"✓ 已保存 {args.host} 的 git 凭证（用户名 {args.username}，PAT 已入凭据库不回显）")
+    return 0
+
+
+def _cmd_clear_git_cred(args: argparse.Namespace) -> int:
+    from runner.gitops import delete_git_cred
+
+    deleted = delete_git_cred(args.host)
+    print(f"✓ 已删除 {args.host} 的 git 凭证" if deleted else f"（{args.host} 无已存凭证）")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="runner", description="YuanAgent 本地执行器（YuanRunner）"
@@ -96,6 +120,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("clear-token", help="删除已保存的令牌").set_defaults(func=_cmd_clear_token)
     sub.add_parser("status", help="显示配置与令牌状态").set_defaults(func=_cmd_status)
+
+    cred_p = sub.add_parser(
+        "set-git-cred", help="保存 git HTTPS 凭证（用户名+PAT）到系统凭据库"
+    )
+    cred_p.add_argument("host", help="git 主机，如 github.com")
+    cred_p.add_argument("--username", required=True, help="git 用户名")
+    cred_p.add_argument("--pat", default=None, help="PAT；缺省时交互输入（不回显）")
+    cred_p.set_defaults(func=_cmd_set_git_cred)
+
+    clear_cred_p = sub.add_parser("clear-git-cred", help="删除某主机的 git 凭证")
+    clear_cred_p.add_argument("host", help="git 主机，如 github.com")
+    clear_cred_p.set_defaults(func=_cmd_clear_git_cred)
 
     init_p = sub.add_parser("init-config", help="生成示例配置文件")
     init_p.add_argument("--config", type=str, default=None)

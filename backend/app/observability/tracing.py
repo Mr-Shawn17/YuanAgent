@@ -28,6 +28,7 @@ try:  # pragma: no cover - 依赖是否安装取决于部署环境
     _LANGFUSE_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _LANGFUSE_AVAILABLE = False
+    from contextlib import nullcontext
 
     class Langfuse:  # type: ignore[no-redef]
         pass
@@ -35,10 +36,11 @@ except ImportError:  # pragma: no cover
     class CallbackHandler:  # type: ignore[no-redef]
         pass
 
-    def propagate_attributes(**kwargs: Any) -> Any:  # type: ignore[no-redef]
+    def _propagate_attributes_noop(*args: Any, **kwargs: Any) -> Any:
         return nullcontext()
 
-    from contextlib import nullcontext  # type: ignore[no-redef]
+    # 变量赋值而非函数重定义：mypy 不再要求与真实签名逐字一致
+    propagate_attributes = _propagate_attributes_noop
 
 
 class _NullLangfuse:

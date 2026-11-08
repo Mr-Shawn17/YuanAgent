@@ -230,3 +230,21 @@ python -m runner run        # 或双击 dist/YuanRunner/YuanRunner.exe
 - CLI 命令执行工具（白名单 + 超时 + 输出封顶）
 - 本地 MCP Server 经执行器代理接入
 - 托盘图标与开机自启引导
+
+## 13. 开发工作流四件套（2026-11-08 新增）
+
+执行器白名单从文件三件套扩展为 7 个工具，新增：`git_clone`（幂等 clone/pull）、
+`install_deps`（固定模板装依赖）、`delegate_coding`（委派本机 codex CLI）、
+`git_commit_push`（只推回 clone 登记的 remote）。要点：
+
+- 命令全部由 runner 固定 argv 拼装，模型只传结构化参数，无自由命令；
+- git 凭证：`python -m runner set-git-cred <host>` 录入 keyring（服务名
+  YuanAgentRunner），执行时 `GIT_ASKPASS` 注入 + 输出剥离 PAT；
+- 全 danger 档：审批在中心服务，弹窗展示将执行的操作；
+- 配置新增 runner.yaml 三段：`git`（allowed_hosts/clone_depth）、`deps`（python）、
+  `codex`（enabled/path/timeout_seconds）；
+- 服务端新增 `local_devtools_dispatch_timeout` / `local_codex_dispatch_timeout`
+  两个 Settings 键（git/deps 默认 600s、codex 默认 900s，覆盖原 120s 全局超时）。
+
+离线自检：`python scripts/verify_codex_tools.py`（15 项）；
+在线端到端：`python scripts/verify_codex_tools.py --online`（需代理 + codex 就绪）。

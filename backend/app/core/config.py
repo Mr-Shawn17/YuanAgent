@@ -150,6 +150,12 @@ class Settings(BaseModel):
     local_dispatch_timeout: float = Field(default=120.0, gt=0, le=600)
     # 执行器心跳间隔（秒）；客户端侧连续 3 次未收 pong 判定断线
     local_heartbeat_seconds: float = Field(default=30.0, gt=5, le=120)
+    # 开发类工具（git_clone / install_deps / git_commit_push）全流程超时（秒）。
+    # 超时预算链（环环留余量）：runner 侧 git 300 / deps 900 ≤ 本值 960 ≤ env 子 Agent 总超时 1200
+    local_devtools_dispatch_timeout: float = Field(default=960.0, gt=0, le=3600)
+    # codex 委派（delegate_coding）全流程超时（秒）：需覆盖 runner 侧 codex 超时（600），
+    # 且给 coding 子 Agent 总超时（900）留收尾余量 → 840
+    local_codex_dispatch_timeout: float = Field(default=840.0, gt=0, le=7200)
 
     @field_validator("log_level")
     @classmethod

@@ -300,6 +300,26 @@ def make_delegate_tool(
                     )
                 )
             return _final_text(result)
+        except TimeoutError:
+            # 超时不作为异常抛给主 Agent：裸 TimeoutError 会诱发盲目重试
+            # （重试→再次超时/再次卡审批）。返回引导文本，让主 Agent 先核实
+            # 实际产出——长任务（文件编写、codex 委派）经常在超时前已完成主体工作。
+            if event_bus is not None:
+                await event_bus.publish(
+                    DelegateEndEvent(
+                        delegate_id=delegate_id,
+                        agent=name,
+                        ok=False,
+                        latency_ms=int((perf_counter() - started) * 1000),
+                        error="TimeoutError",
+                    )
+                )
+            return (
+                f"（子 Agent「{name}」超过 {config.timeout_seconds:.0f} 秒被中止。"
+                "注意：任务可能已部分或全部完成——请先向用户如实说明情况，"
+                "或委派一个只读核实任务（如让 coding 子 Agent 读取目标文件确认），"
+                "确认确实未完成且确有必要时才重试一次，禁止连续重试。）"
+            )
         except Exception as exc:
             error_text = f"{type(exc).__name__}: {exc}"[:200]
             if event_bus is not None:
@@ -354,6 +374,19 @@ def _run_one_sub_task(
                 )
             )
             return _final_text(result)
+        except TimeoutError:
+            # 与 delegate 路径同语义：超时引导核实，避免上层盲目重试
+            latency_ms = int((perf_counter() - started) * 1000)
+            await event_bus.publish(
+                FanoutTaskEndEvent(
+                    fanout_id=fanout_id, task_id=task_id, agent=agent_name, ok=False,
+                    latency_ms=latency_ms, error="TimeoutError",
+                )
+            )
+            return (
+                f"（子任务超时：「{agent_name}」超过 {timeout_seconds:.0f} 秒被中止，"
+                "任务可能已部分完成，请核实实际产出后再决定是否重试。）"
+            )
         except Exception as exc:
             latency_ms = int((perf_counter() - started) * 1000)
             error_text = f"{type(exc).__name__}: {exc}"[:200]

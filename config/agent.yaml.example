@@ -126,6 +126,11 @@ runtime:
   local_runner_enabled: true
   local_dispatch_timeout: 120
   local_heartbeat_seconds: 30
+  # 开发工具超时（环环留余量）：
+  # devtools: git 300/deps 900(runner 侧) ≤ 960(hub) ≤ env 子 Agent 1200
+  # codex:    600(runner 侧) ≤ 840(hub) ≤ coding 子 Agent 900
+  local_devtools_dispatch_timeout: 960
+  local_codex_dispatch_timeout: 840
 
   # ===== Langfuse 可观测（自托管；trace_id 追踪 + Prompt 版本化）=====
   # enabled       总开关；false 时 Langfuse 完全关闭（优雅降级为 no-op，不影响对话）
@@ -200,10 +205,14 @@ routing:
       timeout_seconds: 300
 
     coding:
-      description: 在沙箱内读写文件、编写与修改代码和文本
+      description: 读写文件、编写与修改代码和文本；多文件修改、跑测试等重编程任务委派本机 codex 执行
       system_prompt: |
         你是「coding」编码子 Agent，负责在沙箱目录内完成文件编写与修改。
         收到任务后：先按需查看现有文件，再动手创建或修改，完成后自查一遍。
+        - 轻量任务（单文件创建/改几行）直接用 write_file / read_file 完成；
+        - 重编程任务（多文件修改、跑测试修错、按需求实现功能）优先调用
+          delegate_coding 把任务整段委派给本机 codex CLI（自带沙箱，耗时数分钟，
+          调用后耐心等待结果，不要重复发起）；
         - 只能操作沙箱内的相对路径，禁止尝试沙箱外的路径；
         - 修改已有文件时保持未提及的部分原样；
         - 最后用简体中文汇报：改了哪些文件、关键内容与注意事项。
@@ -212,9 +221,30 @@ routing:
         - read_file
         - write_file
         - list_directory
+        - delegate_coding  # 重编程任务整段委派本机 codex（danger 档，审批一次）
         - calculator
         - get_current_time
-      timeout_seconds: 300
+      timeout_seconds: 900
+
+    # 环境准备子 Agent：开发工作流中"确定性操作"的执行者（git/依赖/推送），
+    # 与 coding（智能操作）分离；命令由本机 runner 固定 argv 拼装
+    env:
+      description: 开发环境准备——拉取/更新 git 仓库（git_clone）、安装依赖（install_deps）、提交并推送改动（git_commit_push）
+      system_prompt: |
+        你是「env」环境准备子 Agent，负责开发工作流的确定性操作：
+        - git_clone：克隆仓库到工作目录（同名仓库已存在则自动改为更新）；
+        - install_deps：按项目依赖清单安装（固定模板，不装任意包）；
+        - git_commit_push：提交全部改动并推回原远程仓库。
+        按任务顺序调用工具，逐条转述每个工具的执行结果（成功与失败都要如实报告）；
+        工具失败时最多重试一次，仍失败就直接报告原因，不要自行绕路。
+        最后用简体中文汇总：每一步做了什么、结果如何。
+      model_tier: main
+      allowed_tools:
+        - git_clone         # danger 档：命令由 runner 固定拼装，凭证不进上下文
+        - install_deps      # danger 档：固定模板装依赖
+        - git_commit_push   # danger 档：只推回 clone 时登记的远程
+        - list_directory    # read 档：确认 clone/改动结果
+      timeout_seconds: 1200
 
 # ============================== 七、技能（skills） ==============================
 # 对应 backend/app/skills/（loader.py 读取本段）。
