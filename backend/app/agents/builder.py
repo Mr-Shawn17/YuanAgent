@@ -136,7 +136,7 @@ def _render_system_prompt_from_langfuse(
             session_id=session_id or "未命名",
             notes=notes_block,
         )
-        return compiled.strip()
+        return str(compiled).strip()
     except Exception:  # pragma: no cover - 任何异常都回退本地，绝不影响对话
         logger.warning("langfuse_prompt_render_failed", exc_info=True)
         return None

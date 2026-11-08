@@ -47,6 +47,32 @@ tools:
     tier: write
     mode: local
 
+  # ===== 开发工作流四件套=====
+  # 命令由用户本机 YuanRunner 固定 argv 拼装（无自由命令），
+  # git 凭证存系统凭据库经 GIT_ASKPASS 注入，PAT 不进模型上下文。
+  # 全部 danger 档：每次执行前 Web 审批弹窗展示将执行的操作。
+  git_clone:
+    enabled: true
+    tier: danger
+    mode: local
+
+  git_commit_push:
+    enabled: true
+    tier: danger
+    mode: local
+
+  install_deps:
+    enabled: true
+    tier: danger
+    mode: local
+
+  # 编程任务整段委派给用户本机 codex CLI（自带 workspace-write 沙箱、
+  # 用户自己的账号）；轻量单文件修改用 write_file 更省 token
+  delegate_coding:
+    enabled: true
+    tier: danger
+    mode: local
+
   remember:
     enabled: true
     tier: write

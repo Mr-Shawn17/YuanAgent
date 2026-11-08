@@ -160,7 +160,7 @@ class RunnerConnection:
             # 目标目录由执行器侧做沙箱兜底校验（_prepare_workspace 确保存在）。
             workspace = self._resolve_workspace(request.workspace)
             output = await asyncio.to_thread(
-                execute_tool, workspace, request.tool, dict(request.args)
+                execute_tool, workspace, request.tool, dict(request.args), self._config
             )
             self._cache.put(request.request_id, output)
             logger.info(
