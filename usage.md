@@ -349,12 +349,19 @@ python -m runner run
 
 > 四个工具全部 danger 档，每次执行前网页弹审批，全程对沙箱无感（无弹窗、无提权、无 VM）。
 
-| 工具 | 干什么 | 命令由谁拼 |
-| --- | --- | --- |
-| `git_clone` | 克隆仓库到工作目录；同名仓库已存在则 `git pull` 更新（幂等） | runner 固定 argv |
-| `install_deps` | 按清单装依赖：`uv sync` / `pip install -r` / `npm ci` / `npm install` | runner 固定模板 |
-| `delegate_coding` | 把编程任务整段委派给本机 codex CLI（workspace-write 模式、用户自己的账号） | codex 自己 |
-| `git_commit_push` | `add -A + commit + push`，只推回 clone 时登记的远程与分支 | runner 固定 argv |
+| 工具 | 干什么 | 命令由谁拼 | 挂在哪个子 Agent |
+| --- | --- | --- | --- |
+| `git_clone` | 克隆仓库到工作目录；同名仓库已存在则 `git pull` 更新（幂等） | runner 固定 argv | env（环境准备） |
+| `install_deps` | 按清单装依赖：`uv sync` / `pip install -r` / `npm ci` / `npm install` | runner 固定模板 | env（环境准备） |
+| `delegate_coding` | 把编程任务整段委派给本机 codex CLI（workspace-write 模式、用户自己的账号） | codex 自己 | coding（编码） |
+| `git_commit_push` | `add -A + commit + push`，只推回 clone 时登记的远程与分支 | runner 固定 argv | env（环境准备） |
+
+**网页上你会看到什么**：主 Agent 不直接持有这四个工具，而是经 `delegate_to_env` /
+`delegate_to_coding` 委派给子 Agent 执行（multi-Agent 架构）——所以审批卡片显示的是
+`delegate_to_env` 这类委派工具；批准一次即整体授权该子 Agent 本轮的工具调用。
+一条「拉取 → 改代码 → 推回」消息的典型节奏：delegate_to_env 审批（内部跑
+git_clone / install_deps）→ delegate_to_coding 审批（重编程任务内部再经
+delegate_coding 交给 codex，耗时数分钟属正常）→ delegate_to_env 审批（推送）。
 
 **一次性准备（开发同事电脑上）：**
 

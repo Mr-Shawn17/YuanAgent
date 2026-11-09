@@ -32,20 +32,27 @@ def dispatch_local(
     args: dict[str, Any],
     timeout: float | None = None,
 ) -> str:
-    """把工具任务转发到用户执行器；router 保证不抛异常，返回可读文本。"""
+    """把工具任务转发到用户执行器；router 保证不抛异常，返回可读文本。
+
+    本函数运行在 worker 线程（同步工具经 run_in_executor 调用）。hub 场景必须
+    经 dispatch_threadsafe 投递回服务主循环执行——在线程内 asyncio.run 新建
+    循环直接 await 会造成跨循环唤醒不可靠（websocket/future 循环亲和性），
+    概率性永久挂起。无 threadsafe 能力的 router（测试替身）回退直跑。
+    """
     router: Any = context.local_router
     if router is None:
         return "[local_runner_offline] 本地执行器未接入，无法执行本工具"
-    result = asyncio.run(
-        router.dispatch(
-            user_id=context.user_id,
-            tool=tool_name,
-            args=args,
-            workspace=context.workspace,
-            timeout=timeout,
-        )
+    coro = router.dispatch(
+        user_id=context.user_id,
+        tool=tool_name,
+        args=args,
+        workspace=context.workspace,
+        timeout=timeout,
     )
-    return str(result)
+    threadsafe = getattr(router, "dispatch_threadsafe", None)
+    if callable(threadsafe):
+        return str(threadsafe(coro, timeout))
+    return str(asyncio.run(coro))
 
 
 __all__ = ["LOCAL_MODE", "dispatch_local", "wants_local"]
