@@ -244,7 +244,16 @@ python -m runner run        # 或双击 dist/YuanRunner/YuanRunner.exe
 - 配置新增 runner.yaml 三段：`git`（allowed_hosts/clone_depth）、`deps`（python）、
   `codex`（enabled/path/timeout_seconds）；
 - 服务端新增 `local_devtools_dispatch_timeout` / `local_codex_dispatch_timeout`
-  两个 Settings 键（git/deps 默认 600s、codex 默认 900s，覆盖原 120s 全局超时）。
+  两个 Settings 键（git/deps 默认 960s、codex 默认 840s，覆盖原 120s 全局超时；
+  超时预算链：runner 内 git 300 / deps 900 / codex 600 ≤ hub 960/840 ≤ 子 Agent 1200/900）；
+- **挂载架构**：四工具不直挂主 Agent（routing.keep_tools 白名单会丢弃未列出的工具），
+  而是挂入子 Agent——`delegate_coding` 进 coding 子 Agent（总超时 900s），
+  git_clone / install_deps / git_commit_push 进新建的 env 环境准备子 Agent（1200s）；
+- 子 Agent 超时不抛裸 TimeoutError，返回"先核实实际产出、禁止连续重试"引导文本，
+  防主 Agent 盲目重试；
+- **跨线程投递修复**：同步工具经 `hub.dispatch_threadsafe`（run_coroutine_threadsafe）
+  投递回服务主循环执行——早期线程内 asyncio.run 直连 dispatch 存在跨循环唤醒
+  不可靠导致的概率性永久挂起（2026-11-08 网页实测复现：runner 已回传但图卡死）。
 
 离线自检：`python scripts/verify_codex_tools.py`（15 项）；
 在线端到端：`python scripts/verify_codex_tools.py --online`（需代理 + codex 就绪）。

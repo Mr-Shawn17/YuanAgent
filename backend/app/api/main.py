@@ -7,6 +7,7 @@ _build_runtime 单独拆出，测试用 monkeypatch 替换成 InMemory 版本。
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
@@ -80,6 +81,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         retention_days=settings.log_retention_days,
     )
     runtime, stack = await _build_runtime()
+    # 绑定服务主循环：worker 线程里的同步工具经 hub.dispatch_threadsafe 投递回来
+    # （避免跨事件循环唤醒不可靠导致的概率性挂起，见 local_hub.dispatch_threadsafe）
+    runtime.local_hub.bind_loop(asyncio.get_running_loop())
     app.state.runtime = runtime
     logger.info("api_runtime_ready", user_id=runtime.user_id)
     try:

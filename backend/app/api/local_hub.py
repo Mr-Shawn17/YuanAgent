@@ -14,7 +14,9 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import uuid
+from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -58,6 +60,17 @@ class LocalTaskHub:
         self._connections: dict[str, _Connection] = {}
         self._futures: dict[str, asyncio.Future[str]] = {}
         self._dispatch_timeout = dispatch_timeout
+        # 服务主循环引用：worker 线程里的同步工具经 dispatch_threadsafe 投递回来执行
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """记录服务主循环（lifespan 启动时调用一次）。
+
+        同步工具在 worker 线程执行，不能直接 asyncio.run 一个绑定主循环对象的
+        协程（websocket/future 的循环亲和性会引发概率性永久挂起），必须经
+        run_coroutine_threadsafe 投递回主循环。
+        """
+        self._loop = loop
 
     def set_dispatch_timeout(self, seconds: float) -> None:
         """调整下发全流程超时（供装配方用 settings.local_dispatch_timeout 覆盖默认值）。"""
@@ -184,6 +197,31 @@ class LocalTaskHub:
         for conn in list(self._connections.values()):
             self._drop(conn, reason="server_shutdown")
         self._connections.clear()
+
+    def dispatch_threadsafe(
+        self, coro: Coroutine[str, Any, str], timeout: float | None = None
+    ) -> str:
+        """worker 线程入口：把 dispatch 协程投递回服务主循环执行并同步等结果。
+
+        背景：同步工具函数跑在 run_in_executor 的线程池里，早期实现用
+        asyncio.run 在线程内新建事件循环直接 await dispatch —— 但 dispatch
+        内部操作的主循环对象（websocket 发送 / future 完成）跨循环唤醒不可靠，
+        概率性永久挂起且不在任何超时保护内（2026-11-08 网页实测复现）。
+        本方法保证协程在主循环上运行，线程侧只阻塞在 concurrent Future 上，
+        超时由该 Future 兜底。
+        """
+        if self._loop is None or self._loop.is_closed():
+            return "[local_runner_offline] 服务主循环未就绪，无法下发任务"
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        limit = (timeout or self._dispatch_timeout) + 15.0
+        try:
+            return future.result(timeout=limit)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            return (
+                f"[local_runner_timeout] 执行器 {timeout or self._dispatch_timeout:.0f}s "
+                f"+15s 内未返回结果，任务可能仍在执行或已丢失"
+            )
 
 
 __all__ = [
