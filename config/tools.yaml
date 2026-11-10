@@ -77,6 +77,15 @@ tools:
     enabled: true
     tier: write
 
+  # ===== 服务端沙箱化只读 git 查询（docs/sandbox-query.md）=====
+  # 与四件套相反：命令在服务端 runsc（gVisor）容器内对只读副本执行，不经本机 runner。
+  # read 档免审批的前提是每次执行都在沙箱内（无沙箱不执行，spec §2）；
+  # 装配期 Docker Engine / runsc 不可达时工具整体自禁（requires_docker 语义，spec §12）。
+  # 配置段见 config/agent.yaml 的 runtime.sandbox_query。
+  git_query:
+    enabled: true
+    tier: read
+
   # 知识库检索已由真实 RAG 服务（annual-report-rag，经 MCP 接入）提供，
   # 暴露 rag__search / rag__list_companies / rag__get_chunk_detail / rag__health。
   # 本地 stub 假数据工具已禁用，避免与真实 RAG 重复造成模型困惑。

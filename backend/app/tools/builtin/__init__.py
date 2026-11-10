@@ -12,6 +12,7 @@ from app.tools.builtin.filesystem import (
 )
 from app.tools.builtin.gitops import make_git_clone_tool, make_git_commit_push_tool
 from app.tools.builtin.memory import make_remember_tool
+from app.tools.builtin.sandbox_query import make_git_query_tool
 from app.tools.builtin.skill import make_execute_skill_script_tool, make_load_skill_tool
 from app.tools.builtin.time_tool import make_time_tool
 from app.tools.builtin.web_search import make_web_search_tool
@@ -37,6 +38,9 @@ BUILTIN_TOOL_SPECS: dict[str, BuiltinToolSpec] = {
     "git_commit_push": BuiltinToolSpec(make_git_commit_push_tool, "danger"),
     "install_deps": BuiltinToolSpec(make_install_deps_tool, "danger"),
     "delegate_coding": BuiltinToolSpec(make_delegate_coding_tool, "danger"),
+    # 服务端沙箱化只读 git 查询（docs/sandbox-query.md）：read 档免审批的前提是
+    # 每次执行都在 runsc 沙箱内（无沙箱不执行）；Engine 不可达时工厂返回 None 自禁
+    "git_query": BuiltinToolSpec(make_git_query_tool, "read"),
 }
 
 __all__ = [

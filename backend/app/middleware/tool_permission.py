@@ -56,8 +56,10 @@ AUDIT_FLUSH_TIMEOUT = 5.0
 
 ToolResult = ToolMessage | Command[Any]
 
-# 工具错误边界的固定前缀：命中即视为执行失败（见 tools/base.py 的 tool_error_boundary）
-ERROR_CONTENT_PREFIXES = ("[工具执行失败]", "[permission_denied]")
+# 工具错误边界的固定前缀：命中即视为执行失败（见 tools/base.py 的 tool_error_boundary）。
+# sandbox_unavailable：git_query 硬不变量「无沙箱不执行」的拒绝返回（spec §9 审计要求
+# 工具内部失败落 error 态），见 tools/builtin/sandbox_query.py。
+ERROR_CONTENT_PREFIXES = ("[工具执行失败]", "[permission_denied]", "[sandbox_unavailable]")
 
 # 知识库检索工具名后缀：内置 search_knowledge_base 与 MCP 前缀形态
 # （如 rag__search_knowledge_base）都按此匹配，命中且执行成功时解析结果发布引用事件
