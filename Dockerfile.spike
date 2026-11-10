@@ -1,0 +1,37 @@
+# PROTOTYPE（wayfinder T06 spike）——回答「backend 容器化有哪些坑」的一次性镜像，勿用于生产。
+# 结论与坑清单见 docs/wayfinder/2026-11-server-cli-sandbox/research/backend-spike.md
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    TZ=Asia/Shanghai \
+    UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \
+    UV_LINK_MODE=copy
+
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends tzdata curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple uv
+
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+# 坑：uv.lock（2026-09-29）不含 asyncmy——早于 pyproject 加入 langgraph-checkpoint-mysql[asyncmy]。
+# spike 用显式补装绕过；生产镜像必须先刷新 lock（uv lock）。
+RUN uv sync --frozen --no-install-project --no-dev \
+ && uv pip install --python /app/.venv/bin/python asyncmy "langgraph-checkpoint-mysql[asyncmy]" langfuse aiomysql langmem
+# 坑3：langgraph.store.mysql 运行时 import aiomysql，未在 pyproject 声明。
+# 坑4：MemoryExtractor 启动即 import langmem（memory extra 是启动硬依赖，非可选）。
+
+COPY backend/ ./backend/
+COPY config/ ./config/
+COPY scripts/mock_mcp_server.py ./scripts/mock_mcp_server.py
+
+RUN useradd -m -u 10001 appuser \
+ && mkdir -p /app/data /app/log \
+ && chown -R appuser:appuser /app
+USER appuser
+
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONPATH=/app/backend
+
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

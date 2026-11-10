@@ -1,0 +1,10 @@
+frontend
+docs
+tests
+runner
+migrations
+deploy
+skills
+inter_test
+*.md
+.venv

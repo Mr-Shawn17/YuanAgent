@@ -1,0 +1,30 @@
+# PROTOTYPE（wayfinder T06 spike）——最小单服务 compose，跑在 Ubuntu2204 沙箱 Engine（T08 产物）。
+# 用法（在 Ubuntu2204 内）：
+#   WINDOWS_HOST_IP=<Windows宿主IP> docker compose -f compose.spike.yml up -d --build
+# 或写 .env.spike 后 --env-file .env.spike
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.spike
+    image: yuan-backend:spike
+    container_name: yuan-backend-spike
+    ports:
+      - "8000:8000"
+    environment:
+      TZ: Asia/Shanghai
+      GLM_API_KEY: ${GLM_API_KEY:-spike-dummy}
+    extra_hosts:
+      # Windows 宿主（MySQL 所在）。WSL 原生 Engine 下 host-gateway 只指向 WSL 发行版，
+      # 到 Windows 必须用 WSL 默认网关 IP（探测：ip route show default）。
+      - "winhost:${WINDOWS_HOST_IP:?需要注入 Windows 宿主 IP}"
+    volumes:
+      - ./spike-config:/app/config:ro   # 真实配置变体（mysql_host=winhost、rag 禁用）；Settings 无 env 覆盖能力
+      - ./data:/app/data
+      - ./log:/app/log
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 120s   # 后端冷启动 60-90s（MCP 串行连接），留足余量

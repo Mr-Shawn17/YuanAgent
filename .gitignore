@@ -84,3 +84,5 @@ Thumbs.db
 .workbuddy/
 /tools/
 inter_test/
+spike-config/agent.yaml
+spike-config/mcp.yaml
