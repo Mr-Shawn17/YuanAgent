@@ -1,0 +1,61 @@
+# backend 生产 compose（docs/sandbox-query.md §12；骨架来自 T06 spike，坑 1-3 已在代码层修复）。
+# 运行位置：Ubuntu2204 沙箱 Engine（T08 产物）。完整步骤与前提见 docs/deploy-wsl-engine.md。
+#
+# 用法（Ubuntu2204 内，仓库位于 /mnt/d/...）：
+#   cd /mnt/d/VSCodeProject/Multi_Agent/deploy/compose
+#   cp .env.example .env && nano .env     # GLM_API_KEY / WINDOWS_HOST_IP / DOCKER_GID
+#   docker compose up -d --build
+#
+# 前置：沙箱镜像 yuan-sandbox-git 必须已在 Engine 构建（deploy/sandbox/Dockerfile），
+# compose 不负责构建沙箱镜像；缺失时 git_query 报 sandbox_unavailable（无沙箱不执行）。
+#
+# WSL 注意（坑 4）：发行版下电后容器不自动复活——启动前先钉住发行版（keepalive，
+# 见 docs/deploy-wsl-engine.md §3）；真 Linux 服务器无此节。
+
+name: yuan-backend
+
+services:
+  backend:
+    build:
+      context: ../..
+      dockerfile: deploy/backend/Dockerfile
+    image: yuan-backend:latest
+    container_name: yuan-backend
+    ports:
+      - "8000:8000"
+    environment:
+      TZ: Asia/Shanghai
+      # ===== 密钥（env 注入，不落 yaml）=====
+      GLM_API_KEY: ${GLM_API_KEY:?在 deploy/compose/.env 里注入 GLM key}
+      # ===== 容器态差异项（Settings env 覆盖层，T06 坑 3）=====
+      MYSQL_HOST: winhost                     # MySQL 在 Windows 宿主的 Docker Desktop
+      SANDBOX_QUERY__DOCKER_HOST: ""          # 清空 dev 的 tcp 地址：容器内走默认 socket（下方挂载）
+      SANDBOX_QUERY__MIRROR_ROOT: ""          # 清空 dev 的 UNC：容器内用默认挂载点 /app/data/workspace/mirrors
+      SANDBOX_QUERY__MIRROR_ENGINE_ROOT: /var/lib/yuan-mirrors
+    extra_hosts:
+      # WSL 原生 Engine 下 host-gateway 只指向发行版自身；到 Windows 宿主必须用
+      # WSL 默认网关 IP（探测：ip route show default | awk '{print $3}'，坑 6）
+      - "winhost:${WINDOWS_HOST_IP:?在 deploy/compose/.env 里注入 Windows 宿主 IP}"
+    group_add:
+      # docker.sock 属 Engine 的 docker 组（root:docker 660）；appuser 按宿主 GID 入组
+      - "${DOCKER_GID:?在 deploy/compose/.env 里注入 docker 组 GID（getent group docker）}"
+    volumes:
+      # 真实配置单文件挂载（密钥不进镜像层）；容器态差异项由上方 env 覆盖
+      - ../../config/agent.yaml:/app/config/agent.yaml:ro
+      - yuan-data:/app/data                   # 会话数据/kb stub 等（命名卷持久化）
+      - yuan-log:/app/log
+      # Mirror 只读副本：backend rw（clone/fetch），沙箱容器由 backend 以 ro 挂载（spec §4）
+      - /var/lib/yuan-mirrors:/app/data/workspace/mirrors:rw
+      # DooD：backend 经此 socket 驱动 runsc 沙箱容器（同 Engine，spec §3）
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 120s   # 冷启动 60-90s（MCP 串行连接）；容器内实测热启动 10-15s
+    restart: unless-stopped
+
+volumes:
+  yuan-data:
+  yuan-log:
