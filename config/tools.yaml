@@ -86,6 +86,12 @@ tools:
     enabled: true
     tier: read
 
+  # rg 内容检索（PR3，spec §5 v1.1）：ripgrep 在同一沙箱容器对只读副本检索，
+  # 选项白名单同 git_query 纪律；Engine 不可达时整体自禁
+  rg_query:
+    enabled: true
+    tier: read
+
   # 知识库检索已由真实 RAG 服务（annual-report-rag，经 MCP 接入）提供，
   # 暴露 rag__search / rag__list_companies / rag__get_chunk_detail / rag__health。
   # 本地 stub 假数据工具已禁用，避免与真实 RAG 重复造成模型困惑。
