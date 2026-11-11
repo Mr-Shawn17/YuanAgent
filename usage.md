@@ -1,8 +1,8 @@
 # 使用手册
 
-面向本项目的使用者与二次开发者，覆盖从环境准备、安装配置到 CLI / Web 双入口使用、RAG 知识库接入、子 Agent 分流、测试门禁与常见问题排查的完整流程。内部实现原理与设计决策不在本文范围，见 [architecture.md](./architecture.md)。
+面向本项目的使用者与二次开发者，覆盖从环境准备、安装配置到 CLI / Web 双入口使用、RAG 知识库接入、子 Agent 分流、测试门禁与常见问题排查的完整流程。内部实现原理与设计决策不在本文范围，见 [docs/architecture.md](./docs/architecture.md)。
 
-> 更新：2026-11-05（新增第 6 章「本地执行器与工作目录」）｜ 快速概览见仓库根 [README](../README.md)
+> 更新：2026-11-11（新增 5.5「Docker 部署」与 6.7「服务端沙箱只读查询」，修复文件移动后的相对链接）｜ 快速概览见仓库根 [README](README.md)
 
 ---
 
@@ -32,6 +32,7 @@
 
 - **流式对话**：CLI 终端打字机效果，或浏览器 Web 界面 SSE 流式输出
 - **工具调用**：时间、计算器、联网搜索、沙箱文件读写、知识库检索等内置工具，外加 MCP 协议接入的第三方工具
+- **服务端沙箱查询**：git_query（白名单 git 子命令：log / show / diff / grep / shortlog / describe 等）与 rg_query（ripgrep 内容检索）在 gVisor（runsc）容器内对公开 GitHub 仓库的只读副本执行——read 档免审批、容器断网、跑完即焚（见 6.7）
 - **子 Agent 分流**：主 Agent 只做路由与汇总——调研任务委派给 research 子 Agent，沙箱写文件委派给 coding 子 Agent；多对象对比类问题经 `fan_out` 并行拆分执行（`config/agent.yaml` 一键开关，见[第 8 章](#8-子-agent-分流与-fan_out-并行)）
 - **RAG 知识库**：检索命中后回答带 `[1] [2]` 引用编号，Web 端渲染可展开的引用卡片
 - **三级权限审批**：`read` 档工具直接执行；`write` / `danger` 档执行前必须经你确认（CLI 终端询问，Web 弹窗阻断）
@@ -253,11 +254,25 @@ cd frontend && npm run dev
 
 可调配置（`config/agent.yaml` 的 runtime 段）：`log_dir`（默认 `log`）与 `log_retention_days`（默认 7，设 0 为永久保留）。
 
+### 5.5 Docker 部署（可选，生产形态）
+
+backend 提供生产镜像（`deploy/backend/Dockerfile`）与 compose 编排（`deploy/compose/`）；6.7 节的服务端沙箱查询在容器化形态下由 backend 容器经挂载的 docker.sock 驱动 runsc 沙箱执行：
+
+```bash
+cd deploy/compose
+cp .env.example .env       # 按注释填 GLM_API_KEY / WINDOWS_HOST_IP / DOCKER_GID
+docker compose up -d --build
+```
+
+前置：沙箱镜像 `yuan-sandbox-git` 已在 Engine 构建（`docker build -t yuan-sandbox-git deploy/sandbox`），缺失时 git_query / rg_query 报 `sandbox_unavailable`。MySQL / Qdrant / Langfuse 等基础设施仍由各自 compose 管理，backend 容器经宿主 IP（compose 里注册为 `winhost`）跨界连接。
+
+WSL2 沙箱 Engine 的完整部署步骤（钉住发行版、mirror 目录、compose 参数采集）见 [deploy-wsl-engine.md](./docs/deploy-wsl-engine.md)；真 Linux 服务器部署相同（无 WSL 特有节）。
+
 ---
 
 ## 6. 本地执行器与工作目录（网页操作本机文件）
 
-> 更新：2026-11-05。本功能让 Web 端的文件读写真正落到**用户本机电脑**，而不是服务器沙箱。完整设计见 [local-runner.md](./local-runner.md) 与 [workspace.md](./workspace.md)。
+> 更新：2026-11-05。本功能让 Web 端的文件读写真正落到**用户本机电脑**，而不是服务器沙箱。完整设计见 [docs/local-runner.md](./docs/local-runner.md) 与 [docs/workspace.md](./docs/workspace.md)。
 
 ### 6.1 一句话原理
 
@@ -373,6 +388,23 @@ python -m runner set-git-cred github.com --username <你的用户名>
 
 **安全要点**：模型永远只传结构化参数（repo_url / message / task），命令行由 runner 固定拼装，不存在自由命令；git 凭证经 `GIT_ASKPASS` 注入并从回传输出中剥离 PAT；推送只能推回 clone 登记的 remote。codex 的沙箱只是附加保险，平台安全支柱是"结构化收口 + danger 审批 + 审计"。
 
+### 6.7 服务端沙箱只读查询（git_query / rg_query）
+
+> 更新：2026-11-11。与 6.6 四件套方向相反：这条链路全部发生在**服务端**，不经本机 runner。详细 spec 见 `docs/sandbox-query.md`（本地文档，不入库）。
+
+| 工具 | 干什么 | 权限 |
+| --- | --- | --- |
+| `git_query` | 对公开 GitHub 仓库执行白名单 git 查询：log / show / diff / branch / ls-files / grep（-n/-i/-w/-v/-E/-F/-e）/ shortlog / describe、log -S/-G pickaxe 等（子命令与选项双重白名单） | read，免审批 |
+| `rg_query` | 用 ripgrep 在同一仓库的代码内容里做正则检索，白名单选项：-i 忽略大小写、-w 全词、-n 行号、-g \<glob\>、-t \<类型\>、-m 每文件上限、-A/-B/-C 上下文行数 | read，免审批 |
+
+两个工具共用同一套沙箱纪律：
+
+- 服务端把目标仓库（`owner/repo`）clone 成**只读副本**（Mirror，TTL 30 分钟过期即 fetch 刷新），在一次性 runsc（gVisor）容器内以只读挂载执行命令：**容器断网、跑完即焚、无沙箱不执行**（绝不回退宿主直跑）。
+- read 档免审批的前提就是这条沙箱不变量；模型只能传结构化参数（repo_ref / 子命令 / 模式 / 路径），命令行由驱动层白名单拼装，`--pre` 等可执行项与路径穿越（`../`、绝对路径、盘符、反斜杠）一律拒绝。
+- 输出封顶 20000 字符；rg 退出码 1 = 无命中，会渲染成「无匹配」而非报错。
+- 部署前提：服务端可达的 Docker Engine 且 runsc 已注册、沙箱镜像已构建（见 5.5 与 deploy-wsl-engine.md）。Engine 不可达时两个工具在装配期**自动禁用**（registry 记禁用原因），不影响其余功能。
+- 配置在 `config/agent.yaml` 的 `runtime.sandbox_query` 段（docker_host / 副本 TTL / 超时与资源上限）；工具挂在 research 子 Agent 白名单里，网页上说「查一下 xxx 仓库最近的提交」即可触发。
+
 ---
 
 ## 7. 接入 RAG 知识库
@@ -424,9 +456,9 @@ python -m pytest tests/eval -q -m rag_service -s
 
 ## 8. 子 Agent 分流与 fan_out 并行
 
-主 Agent 只做路由与汇总：检索调研类任务委派给 **research** 子 Agent，沙箱文件编写委派给 **coding** 子 Agent；多对象对比类问题（如「对比 A、B 两家公司 2024 年营收」）由 `fan_out` 工具并行拆分执行。对使用者的影响：
+主 Agent 只做路由与汇总：检索调研类任务委派给 **research** 子 Agent，沙箱文件编写委派给 **coding** 子 Agent，环境准备类确定性操作（拉仓库 / 装依赖 / 提交推送）委派给 **env** 子 Agent；多对象对比类问题（如「对比 A、B 两家公司 2024 年营收」）由 `fan_out` 工具并行拆分执行。对使用者的影响：
 
-- CLI 启动头部会列出「子 Agent：research（N 工具）、coding（M 工具）」；主 Agent 工具清单相应收缩。
+- CLI 启动头部会列出「子 Agent：research（N 工具）、coding（M 工具）、env（K 工具）」；主 Agent 工具清单相应收缩。
 - 工具轨迹里子 Agent 的工具调用带 `[subagent:research]` / `[subagent:coding]` 前缀（Web 端 `tool_start` 帧含 `origin` 字段），与主 Agent 自己的调用可区分。
 - **审批语义**：`delegate_to_research` 与纯只读的 `fan_out` 批次直接执行不弹窗；`delegate_to_coding` 是写档、弹一次审批窗——你批准的是「整次委派」，批准后子 Agent 内部（如连续写多个文件）不再逐条打断，但每一步仍写审计并出现在轨迹里。
 
@@ -447,7 +479,7 @@ routing:
 python scripts/verify_p6_subagents.py
 ```
 
-三项全查：闲聊不委派、调研走 research 免审批、写文件走 coding 审批一次 + 沙箱落盘 + 审计落库。fan_out 详细说明见 [fanout-guide.md](./fanout-guide.md)。
+三项全查：闲聊不委派、调研走 research 免审批、写文件走 coding 审批一次 + 沙箱落盘 + 审计落库。fan_out 详细说明见 [docs/fanout-guide.md](./docs/fanout-guide.md)。
 
 ---
 
@@ -613,13 +645,13 @@ skills:
 | `limits` | 单轮熔断限额：`max_tool_calls_per_turn`（默认 12）/ `max_model_calls_per_turn`（默认 15） |
 | `history` | 上下文压缩：摘要触发阈值（默认 12000 tokens）、保留消息数（默认 20） |
 | `server` | 启动脚本读取：Python 环境根目录、后端/前端端口 |
-| `runtime` | 运行时配置（原 .env 内容）：模型三档（main / fast / fallback）、MySQL、知识库、第三方 Key 环境变量名、CORS、Web 鉴权、日志目录与保留天数、Langfuse 可观测 |
+| `runtime` | 运行时配置（原 .env 内容）：模型三档（main / fast / fallback）、MySQL、知识库、第三方 Key 环境变量名、CORS、Web 鉴权、日志目录与保留天数、Langfuse 可观测、沙箱查询（sandbox_query：Docker Host / 副本 TTL / 超时与资源上限） |
 | `routing` | 子 Agent 分流：总开关、主 Agent 保留清单、research / coding 定义、fan_out 参数 |
 | `skills` | 技能：总开关、目录、白名单、脚本执行约束（超时/输出上限） |
 
 ### 10.2 config/tools.yaml
 
-工具白名单（`default_allow: false`，未登记一律禁用）、每个工具的权限档位、文件工具沙箱根目录（`data/workspace`，沙箱外路径一律拒绝）、KB 模式开关。
+工具白名单（`default_allow: false`，未登记一律禁用）、每个工具的权限档位、文件工具沙箱根目录（`data/workspace`，沙箱外路径一律拒绝）、服务端沙箱查询工具开关（`git_query` / `rg_query`，requires_docker 语义：Engine 不可达时装配期自禁）、KB 模式开关。
 
 ### 10.3 config/mcp.yaml
 
@@ -637,7 +669,7 @@ MCP Server 清单：transport（stdio / streamable_http）、权限档位继承�
 
 | 档位 | 行为 | 当前成员 |
 | --- | --- | --- |
-| `read` | 直接执行，仅审计 | 时间、计算器、联网搜索、目录列表、读文件、知识库检索、`load_skill`、全部 MCP 工具、`delegate_to_research` |
+| `read` | 直接执行，仅审计 | 时间、计算器、联网搜索、目录列表、读文件、知识库检索、`load_skill`、`git_query` / `rg_query`（服务端沙箱只读查询）、全部 MCP 工具、`delegate_to_research` |
 | `write` | 执行前需审批 | `write_file`、`remember`、`delegate_to_coding`（批准一次即整体授权子 Agent 内部操作） |
 | `danger` | 执行前需审批（更醒目的提示） | `execute_skill_script`（运行技能脚本） |
 
@@ -696,6 +728,8 @@ python -m pytest -q
 ```bash
 python scripts/verify_p4_memory.py       # 记忆系统全链路
 python scripts/verify_p6_subagents.py    # 子 Agent 分流
+python scripts/verify_local_runner.py    # 本地执行器全链路
+python scripts/verify_codex_tools.py     # codex 开发四件套链路自检（需本机 codex CLI）
 ```
 
 ---
@@ -805,6 +839,10 @@ RAG 服务未启动，或 Qdrant / embedding 服务不可用。单个 MCP Server
 
 读写文件类工具被限制在 `data/workspace` 沙箱内，`../` 与绝对路径一律拒绝。把目标文件放进沙箱，或改 `config/tools.yaml` 的 `sandbox_root`。
 
+**git_query / rg_query 报「沙箱不可用」或工具清单里没有**
+
+这两个工具只在服务端 Docker Engine 的 runsc（gVisor）容器内执行，装配期 Engine / runsc 不可达或沙箱镜像缺失时会整体自禁（设计如此，不报错、不影响其余功能）。排查顺序：`docker info | grep -A2 Runtimes` 确认 runsc 已注册；`docker build -t yuan-sandbox-git deploy/sandbox` 构建沙箱镜像；确认 `config/agent.yaml` 的 `runtime.sandbox_query` 段与 research 子 Agent 的 `allowed_tools` 包含这两个工具。完整部署见 [docs/deploy-wsl-engine.md](./docs/deploy-wsl-engine.md)。
+
 **npm 命令不识别（Windows PowerShell）**
 
 PowerShell 下用 `npm.cmd`（同理 `npx.cmd`），或在 cmd / Git Bash 中直接用 `npm`。
@@ -825,21 +863,24 @@ PowerShell 下用 `npm.cmd`（同理 `npx.cmd`），或在 cmd / Git Bash 中直
 YuanAgent/
 ├── backend/app/          # Python 主应用（cli.py 终端入口 / main.py Web 入口 / api/ HTTP 层）
 ├── frontend/             # Next.js 15 Web 前端
-├── runner/               # 本地执行器（YuanRunner）：WSS 客户端 + 文件三工具 + 单实例锁（见第 6 章）
+├── runner/               # 本地执行器（YuanRunner）：WSS 客户端 + 文件三工具 + 开发四件套 + 单实例锁（见第 6 章）
 ├── config/               # agent.yaml(.example) / tools.yaml / mcp.yaml
 ├── scripts/              # init_mysql.py、start_backend.py、start_frontend.py、
 │                         # rag/（serve_mcp.py、seed_agent_knowledge.py）、
 │                         # verify_p4_memory.py、verify_p6_subagents.py、
 │                         # verify_local_runner.py、verify_workspace.py、
-│                         # init_langfuse_prompts.py
-├── deploy/langfuse/      # Langfuse 自托管（docker-compose.yml + .env，见第 13 章）
+│                         # verify_codex_tools.py、e2e_drive.py、init_langfuse_prompts.py
+├── deploy/               # backend/（生产镜像 Dockerfile）、compose/（backend 容器编排，见 5.5）、
+│                         # sandbox/（git_query / rg_query 沙箱镜像）、langfuse/（见第 13 章）
 ├── tests/                # unit（离线）/ integration / eval（RAG 金标准）
 ├── data/                 # kb_stub 语料 + workspace 沙箱
 ├── docs/                 # architecture.md、architecture-brief.md、design.md、
 │                         # fanout-guide.md、local-runner.md、workspace.md、
-│                         # roadmap.md、本文
+│                         # roadmap.md、deploy-wsl-engine.md
+│                         # （sandbox-query.md、codex-integration.md 为本地文档，不入库）
+├── usage.md              # 使用手册（本文，仓库根）
 ├── Makefile              # 常用命令入口
 └── LICENSE               # MIT
 ```
 
-各模块职责、数据流水线、安全矩阵与已知差异清单，见 [architecture.md](./architecture.md)。
+各模块职责、数据流水线、安全矩阵与已知差异清单，见 [docs/architecture.md](./docs/architecture.md)。

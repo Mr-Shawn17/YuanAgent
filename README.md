@@ -41,17 +41,20 @@
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
 | 🔐 **三档权限 + 人工审批**       | 工具按 `read / write / danger` 分档：`write` 及以上执行前必须经用户确认（CLI 终端询问 / Web 弹窗阻断），所有调用无条件写审计表，模型无法静默「动手」                        |
 | 🧩 **MCP 生态即插即用**        | 任意第三方 MCP Server 只需在 `config/mcp.yaml` 加一段配置即可接入（stdio / streamable-http 双传输），不改一行代码                                    |
-| 🤖 **子 Agent 分流 + 并行委派** | 主 Agent 只做路由与汇总：调研任务委派 `research`、写文件委派 `coding`；多对象对比类问题自动 `fan_out` 并行拆分执行                                            |
+| 🤖 **子 Agent 分流 + 并行委派** | 主 Agent 只做路由与汇总：调研任务委派 `research`、写文件委派 `coding`、环境准备委派 `env`；多对象对比类问题自动 `fan_out` 并行拆分执行                                            |
 | 🧰 **技能 Skills**          | 一目录一技能（SKILL.md 指南 + 可选脚本）：清单渐进式披露不撑上下文，脚本执行走 danger 档强制审批——加目录即生效，CLI `/skills` 可查                       |
 | 📚 **RAG 与 Agent 解耦**    | 真实检索由独立 RAG 服务经 MCP 提供（Qdrant 混合检索），主项目只认一个 10 字段的 `KnowledgeChunk` 契约，无 Qdrant 也能用 stub 模式跑通全链路                        |
 | 🧠 **长期记忆**              | 说「请记住……」即写入记忆，跨会话可召回；长对话自动摘要压缩；记忆抽取放后台不阻塞回复                                                                             |
 | 💬 **双入口 + OpenAI 兼容**   | CLI 终端（Typer + Rich 打字机）与 Web 界面（SSE 流式 / 工具轨迹 / 引用卡片 / 审批弹窗 / 执行链路图）；另暴露 `/v1/chat/completions` 兼容端点，任何 OpenAI SDK 可直连 |
 | 💻 **本地执行器（网页操作本机文件）** | 双击本机 `YuanRunner.exe` 后台进程，Web 端 `read_file` / `write_file` / `list_directory` 经 WSS 转发到用户电脑执行，文件真正落在本机磁盘而非服务器沙箱；设备令牌鉴权 + 断线重连 + 单实例锁 |
+| 🛰️ **服务端沙箱只读查询** | `git_query` / `rg_query` 在 gVisor（runsc）容器内对公开仓库只读副本执行白名单 git 查询与 ripgrep 内容检索——read 档免审批、容器断网、跑完即焚；Engine 不可达时工具整体自禁 |
+| ⌨️ **codex 开发工作流四件套** | 网页一句「拉取 → 改代码 → 推回」：`git_clone` / `install_deps` / `delegate_coding` / `git_commit_push` 由本机 YuanRunner 固定 argv 拼装，重编程委派用户自己的 codex CLI，PAT 经 GIT_ASKPASS 注入不进模型上下文 |
 
 ## 它能做什么
 
 - **流式对话**：CLI 打字机效果，或 Web 界面 SSE 逐字输出，底部显示 token 用量
 - **工具调用**：时间、计算器（SymPy 精确计算）、联网搜索（Tavily）、沙箱文件读写、知识库检索等内置工具，外加 MCP 协议第三方工具
+- **服务端沙箱查询**：`git_query`（log / show / diff / grep / shortlog / describe 等白名单子命令）与 `rg_query`（ripgrep 内容检索）在 gVisor 沙箱内查询公开 GitHub 仓库，read 档免审批、断网跑完即焚
 - **技能（Skills）**：`skills/` 目录放 SKILL.md 即可教 Agent 按固定流程做事（渐进式披露）；技能可带脚本，经 danger 档审批后执行
 - **RAG 知识库问答**：检索命中后回答带 `[1] [2]` 引用编号，Web 端渲染可展开的引用卡片
 - **长期记忆**：跨会话记住你的偏好与事实（如生日），自动抽取 + 合并
@@ -82,10 +85,11 @@ FastAPI 后端 (:8000) ←──────────┤
 
 ```
 用户问题 → 主 Agent（路由）
-            ├─ 闲聊/时间/记忆 ──→ 自己处理
-            ├─ 检索调研类 ──────→ delegate_to_research（只读，免审批）
-            ├─ 沙箱写文件 ──────→ delegate_to_coding（写档，整体审批一次）
-            └─ 多对象对比 ──────→ fan_out 并行委派（默认上限 4 路，纯只读免审批）
+            ├─ 闲聊/时间/记忆 ────→ 自己处理
+            ├─ 检索调研/仓库查询 ──→ delegate_to_research（只读，免审批；含 git_query / rg_query 沙箱查询）
+            ├─ 沙箱写文件/改代码 ──→ delegate_to_coding（写档，整体审批一次；重任务委派本机 codex）
+            ├─ 拉仓库/装依赖/推送 ──→ delegate_to_env（danger 档，固定 argv 拼装）
+            └─ 多对象对比 ────────→ fan_out 并行委派（默认上限 4 路，纯只读免审批）
 ```
 
 ## 技术栈
@@ -104,7 +108,7 @@ FastAPI 后端 (:8000) ←──────────┤
 
 ## 快速开始
 
-详细步骤（含 RAG 接入、子 Agent 配置、常见问题）见 **[docs/usage.md](./docs/usage.md)**，以下为最小路径。
+详细步骤（含 RAG 接入、子 Agent 配置、沙箱查询、常见问题）见 **[usage.md](./usage.md)**，以下为最小路径。
 
 ### 1. 环境要求
 
@@ -115,6 +119,7 @@ FastAPI 后端 (:8000) ←──────────┤
 | Node.js        | 18+                                         | 仅 Web 端           |
 | LLM API Key    | 任意 OpenAI 兼容网关（GLM / DashScope / DeepSeek…） | 必需                |
 | Tavily API Key | 联网搜索用                                       | 可选（缺 Key 该工具自动禁用） |
+| Docker Engine + runsc | 服务端沙箱查询（git_query / rg_query）执行环境 | 可选（Engine 不可达时这两个工具自动禁用） |
 
 ### 2. 安装依赖
 
@@ -171,7 +176,7 @@ python -m app.cli chat     # 进入终端聊天
 
 CLI 会话内斜杠命令：`/new` 新建会话 ｜ `/sessions` 列出历史 ｜ `/use <id前缀>` 切换会话 ｜ `/model` 模型配置 ｜ `/skills` 已加载技能 ｜ `/exit` 退出。
 
-想试技能：对阿元说一句帮我写本周周报，它会先 `load_skill` 读 `skills/weekly-report/` 的指南，再按流程收集内容；跑脚本时终端会先问一次是否允许。往 `skills/` 放新目录、重启后自动生效，完整说明见 [docs/usage.md §8](./docs/usage.md#8-技能-skills教-agent-按你的流程做事)。
+想试技能：对阿元说一句帮我写本周周报，它会先 `load_skill` 读 `skills/weekly-report/` 的指南，再按流程收集内容；跑脚本时终端会先问一次是否允许。往 `skills/` 放新目录、重启后自动生效，完整说明见 [usage.md §9](./usage.md#9-技能-skills教-agent-按你的流程做事)。
 
 ### 6. 启动 Web 界面（可选）
 
@@ -184,6 +189,19 @@ cd frontend && npm install && npm run dev
 ```
 
 浏览器打开 <http://localhost:3000>：会话列表、流式气泡、工具轨迹折叠面板、引用卡片、审批弹窗、fan_out 执行链路图。
+
+### 7. Docker 部署（可选，生产形态）
+
+backend 提供生产镜像与 compose 编排（服务端沙箱查询所需的 runsc 沙箱由 backend 容器经挂载的 docker.sock 驱动）：
+
+```bash
+# 前置：沙箱镜像已在 Engine 构建；WSL2 需先钉住发行版（完整步骤见链接文档）
+cd deploy/compose
+cp .env.example .env      # 填 GLM_API_KEY / WINDOWS_HOST_IP / DOCKER_GID
+docker compose up -d --build
+```
+
+MySQL / Qdrant / Langfuse 等基础设施仍由各自 compose 管理，backend 容器经宿主 IP 跨界连接。完整步骤（含 WSL 沙箱 Engine 部署）见 [docs/deploy-wsl-engine.md](./docs/deploy-wsl-engine.md)。
 
 ## 本地执行器与工作目录（网页操作本机文件）
 
@@ -256,15 +274,15 @@ python -m runner run
 
 | 文件                  | 管什么                                                                                                                                                |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config/agent.yaml` | 七段：`persona`（人设）/ `limits`（熔断限额）/ `history`（摘要阈值）/ `server`（端口与 Python 环境）/ `runtime`（模型、MySQL、密钥环境变量名等，原 .env 内容）/ `routing`（子 Agent 分流与 fan_out）/ `skills`（技能目录、白名单、脚本执行约束） |
-| `config/tools.yaml` | 工具白名单（默认全禁用）、每个工具的权限档位、文件工具沙箱根目录、KB stub/mcp 开关                                                                                                    |
+| `config/agent.yaml` | 七段：`persona`（人设）/ `limits`（熔断限额）/ `history`（摘要阈值）/ `server`（端口与 Python 环境）/ `runtime`（模型、MySQL、密钥环境变量名、沙箱查询 sandbox_query 等，原 .env 内容）/ `routing`（子 Agent 分流与 fan_out）/ `skills`（技能目录、白名单、脚本执行约束） |
+| `config/tools.yaml` | 工具白名单（默认全禁用）、每个工具的权限档位、文件工具沙箱根目录、服务端沙箱查询工具（git_query / rg_query）、KB stub/mcp 开关                                                        |
 | `config/mcp.yaml`   | MCP Server 清单：transport、权限档位继承、工具白名单、超时；接新 Server 只加一段配置                                                                                           |
 
 **权限档位**（安全模型核心）：
 
 | 档位       | 行为            | 成员示例                                                    |
 | -------- | ------------- | ------------------------------------------------------- |
-| `read`   | 直接执行，仅审计      | 时间、计算器、联网搜索、读文件、知识库检索、`load_skill`、全部 MCP 工具、`delegate_to_research`  |
+| `read`   | 直接执行，仅审计      | 时间、计算器、联网搜索、读文件、知识库检索、`load_skill`、`git_query` / `rg_query`（服务端沙箱只读查询）、全部 MCP 工具、`delegate_to_research`  |
 | `write`  | 执行前需审批        | `write_file`、`remember`、`delegate_to_coding`（批准一次即整体授权） |
 | `danger` | 执行前需审批（更醒目提示） | `execute_skill_script`（技能脚本执行）、`git_clone` / `install_deps` / `delegate_coding` / `git_commit_push`（开发四件套） |
 
@@ -305,6 +323,8 @@ make eval          # RAG 金标准评测（20 条：Recall@5 / MRR / 引用正�
 ```bash
 python scripts/verify_p4_memory.py       # 记忆系统全链路
 python scripts/verify_p6_subagents.py    # 子 Agent 分流
+python scripts/verify_local_runner.py    # 本地执行器全链路
+python scripts/verify_codex_tools.py     # codex 开发四件套链路自检（需本机 codex CLI）
 ```
 
 ## 目录结构
@@ -325,12 +345,15 @@ YuanAgent/
 │   ├── db/               #   ORM / 引擎 / 仓储
 │   └── core/             #   配置 / 事件总线 / 日志脱敏 / 错误层级
 ├── frontend/             # Next.js 15 前端
-├── runner/               # 本地执行器（YuanRunner）：WSS 客户端 + 文件三工具 + 单实例锁
+├── runner/               # 本地执行器（YuanRunner）：WSS 客户端 + 文件三工具 + 开发四件套 + 单实例锁
 ├── skills/               # 技能目录（SKILL.md + 可选脚本，加目录即生效）
 ├── config/               # agent.yaml(.example) / tools.yaml / mcp.yaml
+├── deploy/               # backend 生产镜像 Dockerfile / compose 编排 / sandbox 沙箱镜像 / langfuse
 ├── scripts/              # init_mysql / start_backend / start_frontend / rag/ / verify_*
 ├── data/                 # kb_stub 示例语料 + workspace 文件沙箱
-├── docs/                 # 架构详解 / 设计规范 / 使用手册 / Roadmap
+├── docs/                 # 架构详解 / 设计规范 / 部署与沙箱文档 / Roadmap
+├── usage.md              # 使用手册（仓库根）
+├── GLOSSARY.md           # 领域术语表
 └── Makefile              # 常用命令入口
 ```
 
@@ -338,13 +361,14 @@ YuanAgent/
 
 | 文档                                                         | 内容                                            |
 | ---------------------------------------------------------- | --------------------------------------------- |
-| [docs/usage.md](./docs/usage.md)                           | 使用手册：安装配置 → CLI / Web → RAG 接入 → 子 Agent → 技能 Skills → Langfuse 可观测 → 排错 |
+| [usage.md](./usage.md)                           | 使用手册：安装配置 → CLI / Web → 本地执行器 → Docker 部署 → RAG 接入 → 子 Agent → 技能 Skills → 服务端沙箱查询 → Langfuse → 排错 |
 | [docs/architecture.md](./docs/architecture.md)             | 架构详解：逐文件讲解、流水线、安全矩阵、设计契约                      |
 | [docs/architecture-brief.md](./docs/architecture-brief.md) | 架构速览：10-20 分钟读懂全貌                             |
 | [docs/design.md](./docs/design.md)                         | 设计规范                                          |
 | [docs/fanout-guide.md](./docs/fanout-guide.md)             | fan_out 并行委派使用说明                              |
 | [docs/local-runner.md](./docs/local-runner.md)             | 本地执行器（YuanRunner）实施方案：架构 / 协议 / 安全 / 打包部署 |
 | [docs/workspace.md](./docs/workspace.md)                   | 多工作目录方案：按会话绑定 / 目录上报 / 动态热切换               |
+| [docs/deploy-wsl-engine.md](./docs/deploy-wsl-engine.md)   | backend 容器化 + runsc 沙箱 Engine 部署（WSL2 / 真机通用）   |
 | [docs/roadmap.md](./docs/roadmap.md)                       | 演进路线与现状差异清单                                   |
 
 ## Roadmap
@@ -356,6 +380,8 @@ YuanAgent/
 - [x] 容器化部署（backend / frontend / MySQL 编排）
 - [x] fan_out 并行子 Agent 委派 + 前端执行链路图
 - [x] 观测接入 Langfuse（带 trace_id 的跨进程追踪 + Prompt 版本化）
+- [x] codex 开发工作流四件套（git_clone / install_deps / delegate_coding / git_commit_push）
+- [x] 服务端沙箱只读查询（git_query / rg_query，gVisor runsc 容器 + 只读副本）
 - [ ] 记忆生命周期管理（过期 / 删除 / 清空入口）
 - [ ] 观测升级（metrics 导出 / 成本聚合看板）
 
@@ -370,11 +396,14 @@ RAG 服务未启动或 Qdrant / embedding 服务不可用。单个 MCP Server �
 **Q：文件工具报「路径超出沙箱」？**  
 读写文件类工具被限制在 `data/workspace` 沙箱内，`../` 与绝对路径一律拒绝。可改 `config/tools.yaml` 的 `sandbox_root`。
 
+**Q：git_query / rg_query 报「沙箱不可用」或工具清单里没有？**  
+这两个工具只在服务端 Docker Engine 的 runsc（gVisor）容器内执行，装配期检测不通过会整体自禁（设计如此，不报错）。确认 Engine 可达且 runsc 已注册（`docker info | grep -A2 Runtimes`）、沙箱镜像已构建（`docker build -t yuan-sandbox-git deploy/sandbox`）。WSL2 部署细节见 [docs/deploy-wsl-engine.md](./docs/deploy-wsl-engine.md)。
+
 **Q：联网搜索工具不存在？**  
 未配置 `TAVILY_API_KEY` 时该工具自动禁用（设计如此，不报错）。配上重启即恢复。
 
 **Q：`make` 命令不识别？**  
-Makefile 只是命令清单，任何目标都可用 Python 直接执行，等价命令见 [docs/usage.md](./docs/usage.md)。
+Makefile 只是命令清单，任何目标都可用 Python 直接执行，等价命令见 [usage.md](./usage.md)。
 
 ## License
 

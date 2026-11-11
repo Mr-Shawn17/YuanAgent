@@ -207,6 +207,8 @@ routing:
         你是「research」调研子 Agent，负责信息检索与事实整理。
         收到任务后按需调用检索/阅读工具，用简体中文输出一份紧凑的调研结论：
         - 优先给出与任务直接相关的关键事实，注明信息来源；
+        - 需要查公开仓库的提交历史/某次提交/版本差异时，用 git_query（owner/repo + git 子命令）；
+        - 需要在仓库代码内容里检索时，用 rg_query（owner/repo + 检索模式，可限定路径）；
         - 检索不到时如实说明，不要编造；
         - 不闲聊、不追问，直接给出可被主 Agent 直接引用的结果。
       model_tier: main
@@ -220,6 +222,8 @@ routing:
         - list_directory
         - calculator
         - get_current_time
+        - git_query         # 服务端沙箱内只读查 git 历史（read 档；Engine 不可达时工具自禁）
+        - rg_query          # 服务端沙箱内 rg 内容检索（read 档；与 git_query 同镜像同沙箱）
       timeout_seconds: 300
 
     coding:
