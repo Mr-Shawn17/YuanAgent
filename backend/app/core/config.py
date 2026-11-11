@@ -405,12 +405,47 @@ class Settings(BaseModel):
         return data
 
 
+def _env_overrides(schema: type[BaseModel]) -> dict[str, Any]:
+    """从环境变量提取 Settings 覆盖值（T06 坑 3：容器化/生产的配置注入通道）。
+
+    命名规则：字段路径大写、层级用双下划线连接——
+        mysql_host                → MYSQL_HOST
+        sandbox_query.docker_host → SANDBOX_QUERY__DOCKER_HOST
+
+    变量存在即覆盖（含空串：compose 用 ``SANDBOX_QUERY__MIRROR_ROOT: ""`` 表达
+    「清空 YAML 值、回退默认」）；只接受 schema 已声明的字段路径，其余环境变量
+    一律忽略（防任意注入）。解析失败不抛错：环境是共享的，其他进程的变量
+    不应炸配置加载。
+    """
+    overrides: dict[str, Any] = {}
+    for env_key, env_value in os.environ.items():
+        parts = env_key.lower().split("__")
+        fields = schema.model_fields
+        node = overrides
+        for index, part in enumerate(parts):
+            if part not in fields:
+                break
+            if index == len(parts) - 1:
+                node[part] = env_value
+                break
+            annotation = fields[part].annotation
+            if not (isinstance(annotation, type) and issubclass(annotation, BaseModel)):
+                break  # 想下钻到标量字段的下一级：路径非法，整条忽略
+            fields = annotation.model_fields
+            child = node.setdefault(part, {})
+            if not isinstance(child, dict):
+                break  # YAML/前序 env 已把该段写成标量：整条忽略
+            node = child
+    return overrides
+
+
 def load_settings(**overrides: Any) -> Settings:
     """从 config/agent.yaml 的 runtime 段加载 Settings。
 
-    配置来源只有两处：
+    配置来源与优先级（低 → 高）：
     1. YAML runtime 段（基础配置）
-    2. overrides 参数（测试/程序化注入）
+    2. 环境变量覆盖层（_env_overrides，容器化部署注入差异项/密钥）
+    3. overrides 参数（测试/程序化注入，最高）
 
     敏感密钥仍由 api_key_from_env() 统一从系统环境变量回退（DASHSCOPE/OPENAI/GLM）。
     """
@@ -420,6 +455,7 @@ def load_settings(**overrides: Any) -> Settings:
         runtime = {}
 
     merged: dict[str, Any] = dict(runtime)
+    merged.update(_env_overrides(Settings))
     merged.update(overrides)
     return Settings.model_validate(merged)
 
