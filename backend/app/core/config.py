@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,51 @@ class AgentFileConfig(BaseModel):
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     history: HistoryConfig = Field(default_factory=HistoryConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+
+
+class SandboxQueryConfig(BaseModel):
+    """git_query 沙箱查询配置段（docs/sandbox-query.md §11，agent.yaml 的 runtime.sandbox_query）。
+
+    mirror 双路径（用户 2026-11-10 决策 A）：
+    mirror_root        backend 侧路径——RepoSource clone/fetch 目标；
+                       空 = workspace/mirrors（生产 compose 把 Engine bind 目录挂到这里）
+    mirror_engine_root Engine 侧路径——沙箱容器 --mount src 前缀（如 /var/lib/yuan-mirrors）；
+                       空 = 回退 mirror_root（backend 与 Engine 同文件系统的场景）
+    docker_host        Docker Engine 地址；空 = 默认 socket（Windows dev 无 Docker 时
+                       工具整体自禁，requires_docker 语义）
+    """
+
+    docker_host: str = ""
+    clone_url_prefix: str = ""
+    mirror_root: str = ""
+    mirror_engine_root: str = ""
+    mirror_ttl_seconds: int = Field(default=1800, ge=0)
+    command_timeout_seconds: int = Field(default=60, ge=1, le=300)
+    output_max_chars: int = Field(default=20000, ge=1000)
+    memory: str = "512m"
+    cpus: str = "0.5"
+
+    @field_validator("memory")
+    @classmethod
+    def _check_memory(cls, value: str) -> str:
+        text = value.strip()
+        if not re.fullmatch(r"\d+(\.\d+)?[bkmgt]?", text.lower()):
+            msg = f"sandbox_query.memory 非法：{value}（如 512m / 1g）"
+            raise ValueError(msg)
+        return text
+
+    @field_validator("cpus")
+    @classmethod
+    def _check_cpus(cls, value: str) -> str:
+        try:
+            number = float(value)
+        except ValueError as exc:
+            msg = f"sandbox_query.cpus 非法：{value}（应为数字，如 0.5）"
+            raise ValueError(msg) from exc
+        if number <= 0:
+            msg = f"sandbox_query.cpus 必须 > 0，收到 {value}"
+            raise ValueError(msg)
+        return value
 
 
 class ModelProfile(BaseModel):
@@ -156,6 +202,9 @@ class Settings(BaseModel):
     # codex 委派（delegate_coding）全流程超时（秒）：需覆盖 runner 侧 codex 超时（600），
     # 且给 coding 子 Agent 总超时（900）留收尾余量 → 840
     local_codex_dispatch_timeout: float = Field(default=840.0, gt=0, le=7200)
+
+    # ===== 服务端沙箱化只读 git 查询（git_query，docs/sandbox-query.md §11）=====
+    sandbox_query: SandboxQueryConfig = Field(default_factory=SandboxQueryConfig)
 
     @field_validator("log_level")
     @classmethod

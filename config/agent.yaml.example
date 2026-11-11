@@ -141,6 +141,24 @@ runtime:
   langfuse_public_key: ""
   langfuse_secret_key: ""
 
+  # ===== 服务端沙箱化只读 git 查询（git_query，docs/sandbox-query.md §11）=====
+  # mirror 双路径：mirror_root = backend 侧 clone/fetch 目标（backend 可见）；
+  # mirror_engine_root = Engine 侧路径（沙箱容器 --mount src 前缀）。
+  # 生产 compose：mirror_root = /app/data/workspace/mirrors（rw 挂载 Engine bind 目录）
+  #               mirror_engine_root = /var/lib/yuan-mirrors
+  # Windows dev：mirror_root 配 \\wsl.localhost UNC 直写 Engine 侧目录（需先在
+  #               发行版里 mkdir -p /var/lib/yuan-mirrors 并放开写权限）。
+  sandbox_query:
+    docker_host: ""                       # 空=默认 socket；Windows dev 指向 Engine（如 tcp://<WSL-IP>:2375）
+    clone_url_prefix: ""                  # 匿名 clone 前缀兜底，国内不稳时配 https://ghfast.top/
+    mirror_root: ""                       # 空 = workspace/mirrors
+    mirror_engine_root: ""                # 空 = 回退 mirror_root 本身
+    mirror_ttl_seconds: 1800              # 副本新鲜度 TTL；过期 fetch --all --prune（预算 120s）
+    command_timeout_seconds: 60           # 容器内 git 命令预算；docker 等待 90s ≤ fetch 120s ≤ research 300s
+    output_max_chars: 20000
+    memory: 512m
+    cpus: "0.5"
+
 # ============================== 六、多智能体分流（routing） ==============================
 # 对应 backend/app/agents/subagents.py 的 RoutingConfig（原 configs/agents.yaml）。
 #
