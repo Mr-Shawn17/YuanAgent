@@ -15,10 +15,16 @@ from app.sandbox.container import (
     cap_output,
     probe_sandbox_engine,
     run_git_in_sandbox,
+    run_rg_in_sandbox,
     sanitize_output,
 )
 from app.sandbox.repo_source import RepoSource, RepoSourceError, parse_repo_ref
-from app.sandbox.validator import GitArgumentError, validate_git_args
+from app.sandbox.validator import (
+    GitArgumentError,
+    validate_git_args,
+    validate_rg_args,
+    validate_rg_path,
+)
 
 __all__ = [
     "GitArgumentError",
@@ -30,6 +36,9 @@ __all__ = [
     "parse_repo_ref",
     "probe_sandbox_engine",
     "run_git_in_sandbox",
+    "run_rg_in_sandbox",
     "sanitize_output",
     "validate_git_args",
+    "validate_rg_args",
+    "validate_rg_path",
 ]

@@ -22,11 +22,16 @@ from app.sandbox import (
     SandboxUnavailableError,
     probe_sandbox_engine,
     run_git_in_sandbox,
+    run_rg_in_sandbox,
     validate_git_args,
+    validate_rg_args,
+    validate_rg_path,
 )
 from app.tools.base import ToolContext, ToolEntryConfig, tool_error_boundary
 
 logger = get_logger(__name__)
+
+MAX_RG_PATTERN_CHARS = 256  # 与校验器选项值上限一致
 
 
 def make_git_query_tool(context: ToolContext, entry: ToolEntryConfig) -> BaseTool | None:
@@ -85,4 +90,71 @@ def make_git_query_tool(context: ToolContext, entry: ToolEntryConfig) -> BaseToo
     return git_query
 
 
-__all__ = ["make_git_query_tool"]
+def make_rg_query_tool(context: ToolContext, entry: ToolEntryConfig) -> BaseTool | None:
+    """rg_query 装配工厂：与 git_query 同一探活与镜像来源（requires_docker 语义）。"""
+    settings = context.settings
+    unavailable_reason = probe_sandbox_engine(settings)
+    if unavailable_reason is not None:
+        logger.warning("rg_query_disabled", reason=unavailable_reason)
+        return None
+    source = RepoSource(settings)
+
+    @tool("rg_query")
+    @tool_error_boundary
+    async def rg_query(
+        repo_ref: str, pattern: str, path: str = "", argv: list[str] | None = None
+    ) -> str:
+        """在公开 git 仓库的代码内容里做正则检索（ripgrep，只读）。
+        输入仓库 owner/repo、检索模式与可选路径限定，返回命中行。
+
+        与 git_query 共用服务端 gVisor 沙箱与只读副本，无网络。
+        默认遵守 .gitignore（跳过 .git 等隐藏目录）；输出封顶 20000 字符。
+
+        Args:
+            repo_ref: GitHub "owner/repo"，如 "Mr-Shawn17/YuanAgent"。
+            pattern: 检索模式（rust 正则），如 "sandbox_query"、"def resolve"。
+            path: 可选，限定目录/文件（仓库内相对路径，正斜杠），如 "backend/app"。
+            argv: 额外白名单选项：-i 忽略大小写、-w 全词、-n 行号、-g <glob>、
+                  -t <类型>、-m <每文件上限>、-A/-B/-C <上下文行数>；可省略。
+        """
+        text = pattern.strip()
+        if not text:
+            return "[参数无效] pattern 不能为空"
+        if len(text) > MAX_RG_PATTERN_CHARS:
+            return f"[参数无效] pattern 过长（>{MAX_RG_PATTERN_CHARS} 字符）"
+        try:
+            validated_argv = validate_rg_args(list(argv or []))
+            normalized_path = validate_rg_path(path)
+        except GitArgumentError as exc:
+            return f"[参数无效] {exc}"
+
+        try:
+            await asyncio.to_thread(source.resolve, repo_ref)
+        except RepoSourceError as exc:
+            return str(exc)
+        engine_mount_src = source.engine_mount_src(repo_ref)
+
+        try:
+            result = await asyncio.to_thread(
+                run_rg_in_sandbox,
+                settings,
+                engine_mount_src,
+                text,
+                normalized_path,
+                validated_argv,
+            )
+        except SandboxUnavailableError as exc:
+            return str(exc)  # 硬不变量（spec §2）：绝不回退宿主直跑
+
+        header = (
+            f"[rg {result.exit_code} · {result.elapsed_ms}ms · mirror {result.mirror_ref}]"
+        )
+        if result.exit_code == 1 and not result.stdout.strip():
+            # rg 约定：exit 1 = 无命中（合法结果，非错误）
+            return f"{header} 无匹配"
+        return f"{header}\n{result.stdout}" if result.stdout.strip() else header
+
+    return rg_query
+
+
+__all__ = ["make_git_query_tool", "make_rg_query_tool"]
