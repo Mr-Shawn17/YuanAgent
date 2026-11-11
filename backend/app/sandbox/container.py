@@ -135,14 +135,14 @@ def describe(exc: Exception) -> str:
     return f"{exc.__class__.__name__}: {text}" if text else exc.__class__.__name__
 
 
-def run_git_in_sandbox(
-    settings: Settings, engine_mount_src: str, subcommand: str, argv: list[str]
-) -> SandboxQueryResult:
-    """在 runsc 沙箱容器内对只读副本执行一条白名单 git 命令（spec §6）。
+def _exec_in_sandbox(
+    settings: Settings, engine_mount_src: str, command: list[str]
+) -> tuple[int, str, str]:
+    """在 runsc 一次性容器内执行一条白名单 argv（校验器已把关），返回 (退出码, stdout, stderr)。
 
     - 阻塞函数：工具层经 asyncio.to_thread 调用；
-    - 命令 = ["timeout", "<预算>", "git", <sub>, ...argv]，容器内 busybox timeout
-      实现第一层超时（kill 挂死的 git）；
+    - 命令 = ["timeout", "<预算>", ...command]，容器内 busybox timeout 实现第一层
+      超时（kill 挂死的进程）；
     - 跑完即焚：容器无论成败均手动 remove（等价 --rm，且异常路径也焚）；
     - 引擎级故障（不可达/挂载失败/等待超时）抛 SandboxUnavailableError——不回退宿主。
     """
@@ -151,7 +151,6 @@ def run_git_in_sandbox(
     from docker.types import Mount
 
     cfg = settings.sandbox_query
-    started = time.perf_counter()
     client = docker.DockerClient(
         base_url=cfg.docker_host.strip() or None, timeout=DOCKER_WAIT_SECONDS
     )
@@ -162,13 +161,7 @@ def run_git_in_sandbox(
         try:
             container = client.containers.run(
                 SANDBOX_IMAGE,
-                command=[
-                    "timeout",
-                    str(cfg.command_timeout_seconds),
-                    "git",
-                    subcommand,
-                    *argv,
-                ],
+                command=["timeout", str(cfg.command_timeout_seconds), *command],
                 runtime=SANDBOX_RUNTIME,
                 network_mode="none",  # 断网（spec §6）
                 read_only=True,  # rootfs 只读
@@ -208,17 +201,57 @@ def run_git_in_sandbox(
 
     stdout = stdout_raw.decode("utf-8", errors="replace") if stdout_raw else ""
     stderr = stderr_raw.decode("utf-8", errors="replace") if stderr_raw else ""
-    capped, truncated = cap_output(stdout, stderr, cfg.output_max_chars)
-    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    return exit_code, stdout, stderr
+
+
+def _finalize(
+    settings: Settings,
+    engine_mount_src: str,
+    label: str,
+    started: float,
+    exit_code: int,
+    stdout: str,
+    stderr: str,
+) -> SandboxQueryResult:
+    """消毒 + 封顶 + 组装结果（spec §8）。"""
+    capped, truncated = cap_output(stdout, stderr, settings.sandbox_query.output_max_chars)
     return SandboxQueryResult(
         ok=exit_code == 0,
-        subcommand=subcommand,
+        subcommand=label,
         stdout=capped,
         truncated=truncated,
-        elapsed_ms=elapsed_ms,
+        elapsed_ms=int((time.perf_counter() - started) * 1000),
         mirror_ref=engine_mount_src,
         exit_code=exit_code,
     )
+
+
+def run_git_in_sandbox(
+    settings: Settings, engine_mount_src: str, subcommand: str, argv: list[str]
+) -> SandboxQueryResult:
+    """在 runsc 沙箱容器内对只读副本执行一条白名单 git 命令（spec §6）。"""
+    started = time.perf_counter()
+    exit_code, stdout, stderr = _exec_in_sandbox(
+        settings, engine_mount_src, ["git", subcommand, *argv]
+    )
+    return _finalize(settings, engine_mount_src, subcommand, started, exit_code, stdout, stderr)
+
+
+def run_rg_in_sandbox(
+    settings: Settings, engine_mount_src: str, pattern: str, path: str, argv: list[str]
+) -> SandboxQueryResult:
+    """在 runsc 沙箱容器内对只读副本执行 rg 内容检索（spec §5 v1.1）。
+
+    --color=never 等固定旗标由本层拼装（不经模型）；``--`` 分隔符防止以 ``-``
+    开头的模式/路径被解析为选项。退出码语义：0=有命中，1=无命中（合法结果，
+    由工具层区分呈现），2=出错。
+    """
+    command = ["rg", "--color=never", *argv, "--", pattern]
+    if path:
+        command.append(path)
+    started = time.perf_counter()
+    exit_code, stdout, stderr = _exec_in_sandbox(settings, engine_mount_src, command)
+    return _finalize(settings, engine_mount_src, "rg", started, exit_code, stdout, stderr)
 
 
 __all__ = [
@@ -231,5 +264,6 @@ __all__ = [
     "cap_output",
     "probe_sandbox_engine",
     "run_git_in_sandbox",
+    "run_rg_in_sandbox",
     "sanitize_output",
 ]

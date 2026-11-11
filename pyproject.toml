@@ -22,6 +22,11 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0",
     "httpx>=0.27",
     "docker>=7",  # git_query 沙箱容器驱动（docs/sandbox-query.md §10：docker-py 经 DooD socket）
+    # 以下两项实为启动/运行时硬依赖（T06 坑 2）：MemoryExtractor.__init__ 启动即
+    # import langmem；langgraph.store.mysql 运行时 import aiomysql——容器化构建
+    # --no-dev 全量安装必须能解析到，故升入主依赖（memory extra 保留为兼容别名）
+    "aiomysql>=0.2",
+    "langmem>=0.0.20",
 ]
 
 [project.optional-dependencies]

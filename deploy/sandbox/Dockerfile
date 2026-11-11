@@ -6,8 +6,10 @@
 # runsc 依赖 T08 已注册的 daemon.json runtime；镜像缺失时 git_query 装配/执行报
 # sandbox_unavailable（无沙箱不执行，spec §2）。
 FROM alpine:3.22
-RUN apk add --no-cache git \
-    && git --version
+# git：git_query 七件套（含 PR3 扩展 grep/shortlog/describe）；ripgrep：rg_query 内容检索
+RUN apk add --no-cache git ripgrep \
+    && git --version \
+    && rg --version | head -1
 # 命令由 backend 以 argv 注入（["timeout","60","git",...]），工作目录经 bind 挂载
 # 指向 /repo（只读）；rootfs 只读 + 断网 + tmpfs /tmp 由容器驱动统一施加。
 WORKDIR /repo
