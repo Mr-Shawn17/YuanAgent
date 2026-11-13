@@ -11,7 +11,7 @@
 # backend/app/agents/subagents.py 读取 routing 段）
 #
 # 本文件由原 configs/agent.yaml（人设）、configs/agents.yaml（子 Agent 分流）与 .env（运行时配置）合并而成，
-# 顶层分六段：persona / limits / history / server / runtime / routing。
+# 顶层分八段：persona / limits / history / server / runtime / routing / intent / skills。
 #
 # ============================== 一、人设（persona） ==============================
 persona:
@@ -268,7 +268,36 @@ routing:
         - list_directory    # read 档：确认 clone/改动结果
       timeout_seconds: 1200
 
-# ============================== 七、技能（skills） ==============================
+# ============================== 七、意图快判（intent，前置预判层） ==============================
+# 对应 backend/app/intent/（docs/intent-recognition.md，D1~D9）。
+# 加在主 Agent 自主路由（routing 段）之前的轻量预判层：fast 档先快判意图，
+# 高置信直走、低置信回落现有路由（top-k 作为强提示带上），拿不准升级 main 裁决，
+# 最低置信先追问澄清一次，仍低置信转人工。
+#
+# enabled            总开关；false 时不启用预判层（保持现有路由行为）
+# fast_model_tier    快判用模型档位（fast 档，省钱）
+# upgrade_model_tier 拿不准时裁决用档位（main 档）
+# thresholds         margin=p1−p2 的三段两阈值（按意图差异化，写档类更严）：
+#                      margin ≥ high        → 高置信直走（仅限闲聊/research 等非高风险只读路径）
+#                      low ≤ margin < high  → 升级 upgrade_model_tier 裁决
+#                      margin < low         → 追问澄清一次，仍低置信转人工
+#                    键为意图名（chat/research/coding/env/multi_compare）或 default；
+#                    未单独配置的意图回退 default。阈值是可配置初值，上线前须在自有
+#                    标注样本上校准（Selective Guaranteed Risk），非免检值。
+# turn_limit         会话轮次超过该值即升级 main 裁决（多轮兜底规则）
+intent:
+  enabled: false
+  fast_model_tier: fast
+  upgrade_model_tier: main
+  thresholds:
+    default: {high: 0.15, low: 0.05}
+    coding:  {high: 0.20, low: 0.08}   # 写档类更严（误判代价高）
+    env:     {high: 0.20, low: 0.08}
+  turn_limit: 6
+  risk_intents: [coding, env]          # 高风险硬规则：这些意图无论置信度多高都升级 main 裁决
+  cross_intent_top2: 0.3               # 跨意图信号：top_k 第二名概率超过该值视为单条多意图
+
+# ============================== 八、技能（skills） ==============================
 # 对应 backend/app/skills/（loader.py 读取本段）。
 # Skill = 一个目录一份 SKILL.md（YAML frontmatter + 指南正文），可选携带
 # scripts/*.py 脚本。渐进式披露：system prompt 只注入清单（名称+描述），

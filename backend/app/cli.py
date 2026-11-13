@@ -15,7 +15,7 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
 )
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessageChunk, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from rich.console import Console
 from rich.live import Live
@@ -52,10 +52,13 @@ from app.db.engine import Database, build_database, database_scope
 from app.db.message_sync import persist_new_messages
 from app.db.models import Device
 from app.db.session_repo import SessionRepo
+from app.intent.config import load_intent_config
+from app.intent.gate import GATE_HISTORY_LIMIT, IntentGateResult, run_intent_gate
 from app.llm.factory import get_chat_model, ping_model
 from app.mcp import McpManager
 from app.memory import MemoryExtractor
 from app.middleware.guardrail import GuardrailMiddleware
+from app.middleware.intent_note import IntentNoteMiddleware
 from app.middleware.memory_recall import MemoryRecallMiddleware
 from app.middleware.persona import PersonaMiddleware
 from app.middleware.skill import make_skill_middleware
@@ -325,6 +328,37 @@ def _model_for(settings: Settings) -> Callable[[str], BaseChatModel]:
     return factory
 
 
+async def _run_intent_gate(
+    text: str,
+    *,
+    before_messages: list[Any],
+    session_id: str,
+    settings: Settings,
+) -> IntentGateResult | None:
+    """意图预判层门控（docs/intent-recognition.md §7）；intent.enabled=false 时返回 None。
+
+    历史/轮次从本轮开始前的消息快照读取（与轮后 diff 的 before_messages 共用一次读取）。
+    """
+    intent_config = load_intent_config()
+    if not intent_config.enabled:
+        return None
+    history = [
+        message
+        for message in before_messages
+        if isinstance(message, (HumanMessage, AIMessage)) and str(message.content).strip()
+    ][-GATE_HISTORY_LIMIT:]
+    turn_count = sum(1 for message in before_messages if isinstance(message, HumanMessage)) + 1
+    fast_model = get_chat_model("fast", settings=settings, streaming=False)
+    return await run_intent_gate(
+        text=text,
+        history=history,
+        session_id=session_id,
+        turn_count=turn_count,
+        intent_config=intent_config,
+        fast_model=fast_model,
+    )
+
+
 async def _chat_loop(
     *,
     settings: Settings,
@@ -402,6 +436,8 @@ async def _chat_loop(
                 persona_style=persona.style,
                 persona_boundaries=persona.boundaries,
             )
+            # 意图预判层的路由指令/强提示注入（每轮 run_intent_gate 写 state.intent_note）
+            intent_note_mw = IntentNoteMiddleware()
             recall_mw = MemoryRecallMiddleware(store=store, user_id=user_id, event_bus=bus)
             skill_mw = make_skill_middleware(skill_catalog.records)
             telemetry_mw = TelemetryMiddleware(user_id=user_id)
@@ -422,6 +458,7 @@ async def _chat_loop(
                     model_limit_mw,
                     permission_mw,
                     persona_mw,
+                    intent_note_mw,
                     recall_mw,
                     skill_mw,
                     telemetry_mw,
@@ -495,14 +532,37 @@ async def _chat_loop(
                             console.print(f"[green]✓[/] 已切换到会话 [cyan]{session_id[:12]}[/]")
                         continue
 
+                    config = thread_config(session_id)
+                    # 本轮开始前的消息快照：预判层历史/轮次计数 + 轮后 diff 新增消息共用
+                    before_messages: list[Any] = []
+                    try:
+                        before_state = await agent.aget_state(cast(RunnableConfig, config))
+                        before_messages = list(
+                            (getattr(before_state, "values", None) or {}).get("messages") or []
+                        )
+                    except Exception:
+                        logger.warning("pre_run_state_failed", exc_info=True)
+                    # 意图预判层：快判 + 三段判定（intent.enabled=false 时直通，行为与现状一致）
+                    intent_gate = await _run_intent_gate(
+                        text,
+                        before_messages=before_messages,
+                        session_id=session_id,
+                        settings=settings,
+                    )
+                    if intent_gate is not None and intent_gate.short_reply:
+                        # 追问澄清 / 转人工：短路本轮，不调主 Agent（零 main 成本）
+                        console.print()
+                        console.print(f"[bold magenta]{assistant_name} ›[/]")
+                        console.print(intent_gate.short_reply)
+                        continue
                     payload = {
                         "messages": [HumanMessage(content=text)],
                         **initial_state_fields(
                             session_id=session_id,
                             user_id=settings.default_user_id,
                         ),
+                        "intent_note": intent_gate.note if intent_gate is not None else "",
                     }
-                    config = thread_config(session_id)
                     langfuse_callbacks = make_callbacks(
                         session_id=session_id, user_id=settings.default_user_id
                     )
@@ -515,15 +575,6 @@ async def _chat_loop(
                         user_id=settings.default_user_id,
                         message=" ".join(text.split())[:200],
                     )
-                    # 本轮开始前的消息快照：用于轮结束后 diff 新增消息写入业务表
-                    before_messages: list[Any] = []
-                    try:
-                        before_state = await agent.aget_state(cast(RunnableConfig, config))
-                        before_messages = list(
-                            (getattr(before_state, "values", None) or {}).get("messages") or []
-                        )
-                    except Exception:
-                        logger.warning("pre_run_state_failed", exc_info=True)
                     task: asyncio.Task[str] = asyncio.create_task(
                         _generate_turn(
                             agent, payload, config, assistant_name=assistant_name, bus=bus
@@ -737,6 +788,24 @@ def config(
             f"摘要触发 tokens：{agent_config.history.summarize_trigger_tokens} · "
             f"保留消息数：{agent_config.history.keep_messages}",
             title="人设（config/agent.yaml）",
+            border_style="blue",
+            expand=False,
+        )
+    )
+    intent_config = load_intent_config()
+    thresholds_text = " · ".join(
+        f"{key}(high={entry.high}, low={entry.low})"
+        for key, entry in sorted(intent_config.thresholds.items())
+    )
+    console.print(
+        Panel(
+            f"启用：{intent_config.enabled} · 快判档位：{intent_config.fast_model_tier} · "
+            f"裁决档位：{intent_config.upgrade_model_tier}\n"
+            f"阈值 margin：{thresholds_text or '(未配置)'}\n"
+            f"风险意图：{'/'.join(item.value for item in intent_config.risk_intents)} · "
+            f"跨意图 top2 阈值：{intent_config.cross_intent_top2}\n"
+            f"轮次升级上限：{intent_config.turn_limit}",
+            title="意图快判（config/agent.yaml intent 段）",
             border_style="blue",
             expand=False,
         )

@@ -21,7 +21,7 @@ from typing import Any, cast
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
@@ -40,6 +40,8 @@ from app.core.logging import get_logger
 from app.db.message_sync import persist_new_messages
 from app.db.models import ROLE_ASSISTANT, ROLE_USER
 from app.db.session_repo import SessionRepo
+from app.intent.config import load_intent_config
+from app.intent.gate import GATE_HISTORY_LIMIT, IntentGateResult, run_intent_gate
 from app.middleware.telemetry import usage_of
 from app.observability import make_callbacks
 
@@ -209,6 +211,38 @@ def _interrupt_value(raw: Any) -> dict[str, Any]:
     first = raw[0] if isinstance(raw, (list, tuple)) and raw else raw
     value = getattr(first, "value", None)
     return value if isinstance(value, dict) else {}
+
+
+async def _load_gate_context(
+    runtime: AgentRuntime, session_id: str
+) -> tuple[list[BaseMessage], int]:
+    """预判层用的会话历史与轮次计数（checkpoint 无该线程 / 读失败时视为首轮）。"""
+    try:
+        entry = await runtime.checkpointer.aget_tuple(thread_config(session_id))
+    except Exception:
+        logger.warning("intent_gate_history_failed", exc_info=True)
+        return [], 1
+    if entry is None:
+        return [], 1
+    messages = list((entry.checkpoint.get("channel_values") or {}).get("messages") or [])
+    history: list[BaseMessage] = []
+    for message in messages:
+        if isinstance(message, (HumanMessage, AIMessage)) and text_of(message.content).strip():
+            history.append(message)
+    turn_count = sum(1 for message in messages if isinstance(message, HumanMessage)) + 1
+    return history[-GATE_HISTORY_LIMIT:], turn_count
+
+
+def _clarify_frames(session_id: str, title: str, reply: str) -> list[str]:
+    """追问/转人工短路的 SSE 帧序列（协议与正常流一致，不调主 Agent）。"""
+    session_frame: dict[str, Any] = {"type": "session", "session_id": session_id}
+    if title:
+        session_frame["title"] = title
+    return [
+        sse_event(session_frame),
+        sse_event({"type": "token", "delta": reply}),
+        sse_event({"type": "done", "session_id": session_id}),
+    ]
 
 
 async def _stream_run(
@@ -444,15 +478,44 @@ async def chat(
         ),
     }
     title = " ".join(message.split())[:32]
-    return _sse_response(
-        _stream_run(
+
+    async def _gated_stream() -> AsyncIterator[str]:
+        """预判层门控：追问/转人工短路本轮；否则带 intent_note 走正常流（D9）。"""
+        gate: IntentGateResult | None = None
+        intent_config = load_intent_config()
+        if intent_config.enabled:
+            try:
+                history, turn_count = await _load_gate_context(runtime, session_id)
+                gate = await run_intent_gate(
+                    text=message,
+                    history=history,
+                    session_id=session_id,
+                    turn_count=turn_count,
+                    intent_config=intent_config,
+                    fast_model=runtime.fast_model,
+                )
+            except Exception:
+                # 预判层任何异常都不阻断主链路：等价于未启用预判层
+                logger.warning("intent_gate_failed", exc_info=True)
+                gate = None
+        if gate is not None and gate.short_reply:
+            # 短路本轮（不进 _stream_run），释放已持有的会话执行权
+            runtime.runs.release(session_id)
+            for frame in _clarify_frames(session_id, title, gate.short_reply):
+                yield frame
+            return
+        if gate is not None:
+            graph_input["intent_note"] = gate.note
+        async for frame in _stream_run(
             runtime,
             session_id=session_id,
             user_id=user_id,
             graph_input=graph_input,
             title=title,
-        )
-    )
+        ):
+            yield frame
+
+    return _sse_response(_gated_stream())
 
 
 @router.post("/v1/chat/{run_id}/approve")
