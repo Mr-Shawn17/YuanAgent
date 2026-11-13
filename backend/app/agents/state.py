@@ -26,6 +26,9 @@ class AgentState(BaseAgentState):
     user_id: NotRequired[str]
     citations: NotRequired[list[Citation]]
     retrieved: NotRequired[list[RetrievedChunk]]
+    # 意图预判层（docs/intent-recognition.md §7）：每轮由 run_intent_gate 写入的
+    # 路由指令/强提示，经 IntentNoteMiddleware 注入 system prompt；空串=未启用
+    intent_note: NotRequired[str]
 
 
 def initial_state_fields(
@@ -38,6 +41,7 @@ def initial_state_fields(
         "user_id": user_id,
         "citations": [],
         "retrieved": [],
+        "intent_note": "",
     }
 
 

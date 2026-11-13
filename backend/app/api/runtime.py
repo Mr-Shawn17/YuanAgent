@@ -35,6 +35,7 @@ from app.db.session_repo import SessionRepo
 from app.llm.factory import get_chat_model
 from app.memory import MemoryExtractor
 from app.middleware.guardrail import GuardrailMiddleware
+from app.middleware.intent_note import IntentNoteMiddleware
 from app.middleware.memory_recall import MemoryRecallMiddleware
 from app.middleware.persona import PersonaMiddleware
 from app.middleware.skill import make_skill_middleware
@@ -259,6 +260,8 @@ class AgentRuntime:
             persona_style=persona.style,
             persona_boundaries=persona.boundaries,
         )
+        # 意图预判层的路由指令/强提示注入（每轮 run_intent_gate 写 state.intent_note）
+        intent_note_mw = IntentNoteMiddleware()
         recall_mw = MemoryRecallMiddleware(store=self.store, user_id=user_id, event_bus=event_bus)
         skill_mw = make_skill_middleware(skill_catalog.records)
         telemetry_mw = TelemetryMiddleware(user_id=user_id, session_id=session_id)
@@ -276,6 +279,7 @@ class AgentRuntime:
                 model_limit_mw,
                 permission_mw,
                 persona_mw,
+                intent_note_mw,
                 recall_mw,
                 skill_mw,
                 telemetry_mw,
