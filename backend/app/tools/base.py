@@ -107,35 +107,49 @@ def describe_exception(exc: Exception) -> str:
     return f"{exc.__class__.__name__}: {text}"
 
 
-def tool_error_boundary[F: Callable[..., Any]](func: F) -> F:
+def tool_error_boundary[F: Callable[..., Any]](
+    func: F | None = None, *, content_and_artifact: bool = False
+) -> F | Callable[[F], F]:
     """把工具内部的异常转成可读的错误文本返回给模型。
 
     工具失败不应该炸掉整个 Agent 图：模型拿到错误描述后，
     可以选择重试、换参数或直接向用户解释。
+
+    content_and_artifact=True 时按 langchain content_and_artifact 约定返回
+    (错误文本, None) 二元组——声明了该 response_format 的工具（如 git_query，
+    artifact 承载审计补充字段）错误路径也必须是二元组；既支持 @tool_error_boundary
+    直挂，也支持 @tool_error_boundary(content_and_artifact=True) 带参挂。
     """
-    if inspect.iscoroutinefunction(func):
 
-        @functools.wraps(func)
-        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            try:
-                return await func(*args, **kwargs)
-            except AppError as exc:
-                return f"[{exc.code}] {exc.message}"
-            except Exception as exc:  # 边界层必须兜住一切异常
-                return f"[工具执行失败] {describe_exception(exc)}"
-
-        return cast("F", async_wrapper)
-
-    @functools.wraps(func)
-    def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-        try:
-            return func(*args, **kwargs)
-        except AppError as exc:
+    def _error_text(exc: Exception) -> str:
+        if isinstance(exc, AppError):
             return f"[{exc.code}] {exc.message}"
-        except Exception as exc:  # 边界层必须兜住一切异常
-            return f"[工具执行失败] {describe_exception(exc)}"
+        return f"[工具执行失败] {describe_exception(exc)}"  # 边界层必须兜住一切异常
 
-    return cast("F", sync_wrapper)
+    def _decorate(inner: F) -> F:
+        if inspect.iscoroutinefunction(inner):
+
+            @functools.wraps(inner)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    return await inner(*args, **kwargs)
+                except Exception as exc:
+                    text = _error_text(exc)
+                    return (text, None) if content_and_artifact else text
+
+            return cast("F", async_wrapper)
+
+        @functools.wraps(inner)
+        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return inner(*args, **kwargs)
+            except Exception as exc:
+                text = _error_text(exc)
+                return (text, None) if content_and_artifact else text
+
+        return cast("F", sync_wrapper)
+
+    return _decorate if func is None else _decorate(func)
 
 
 def resolve_in_sandbox(root: Path, path: str) -> Path:

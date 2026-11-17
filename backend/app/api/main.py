@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -89,6 +89,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # 会话级沙箱池兜底回收（spec §4.3：进程退出销毁全部会话沙箱；
+        # 单会话终点走 destroy_session，见 pool.py）
+        from app.sandbox.pool import get_pool
+
+        with suppress(Exception):
+            await get_pool(settings).destroy_all()
         await runtime.shutdown()
         await stack.aclose()
         if runtime.database is not None:

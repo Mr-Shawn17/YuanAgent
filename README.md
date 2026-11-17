@@ -47,14 +47,14 @@
 | 🧠 **长期记忆**              | 说「请记住……」即写入记忆，跨会话可召回；长对话自动摘要压缩；记忆抽取放后台不阻塞回复                                                                             |
 | 💬 **双入口 + OpenAI 兼容**   | CLI 终端（Typer + Rich 打字机）与 Web 界面（SSE 流式 / 工具轨迹 / 引用卡片 / 审批弹窗 / 执行链路图）；另暴露 `/v1/chat/completions` 兼容端点，任何 OpenAI SDK 可直连 |
 | 💻 **本地执行器（网页操作本机文件）** | 双击本机 `YuanRunner.exe` 后台进程，Web 端 `read_file` / `write_file` / `list_directory` 经 WSS 转发到用户电脑执行，文件真正落在本机磁盘而非服务器沙箱；设备令牌鉴权 + 断线重连 + 单实例锁 |
-| 🛰️ **服务端沙箱只读查询** | `git_query` / `rg_query` 在 gVisor（runsc）容器内对公开仓库只读副本执行白名单 git 查询与 ripgrep 内容检索——read 档免审批、容器断网、跑完即焚；Engine 不可达时工具整体自禁 |
+| 🛰️ **服务端沙箱只读查询** | `git_query` / `rg_query` 经 OpenSandbox 会话级沙箱池在 gVisor（runsc）沙箱内对公开仓库只读副本执行白名单 git 查询与 ripgrep 内容检索——read 档免审批、防火墙断网、1 会话 1 沙箱复用、空闲自动回收；server 不可达或非 gvisor 时工具整体自禁，绝不回退宿主直跑 |
 | ⌨️ **codex 开发工作流四件套** | 网页一句「拉取 → 改代码 → 推回」：`git_clone` / `install_deps` / `delegate_coding` / `git_commit_push` 由本机 YuanRunner 固定 argv 拼装，重编程委派用户自己的 codex CLI，PAT 经 GIT_ASKPASS 注入不进模型上下文 |
 
 ## 它能做什么
 
 - **流式对话**：CLI 打字机效果，或 Web 界面 SSE 逐字输出，底部显示 token 用量
 - **工具调用**：时间、计算器（SymPy 精确计算）、联网搜索（Tavily）、沙箱文件读写、知识库检索等内置工具，外加 MCP 协议第三方工具
-- **服务端沙箱查询**：`git_query`（log / show / diff / grep / shortlog / describe 等白名单子命令）与 `rg_query`（ripgrep 内容检索）在 gVisor 沙箱内查询公开 GitHub 仓库，read 档免审批、断网跑完即焚
+- **服务端沙箱查询**：`git_query`（log / show / diff / grep / shortlog / describe 等白名单子命令）与 `rg_query`（ripgrep 内容检索）经 OpenSandbox 在 gVisor 沙箱内查询公开 GitHub 仓库，read 档免审批、会话级沙箱复用（空闲 TTL 自动回收）、防火墙断网
 - **技能（Skills）**：`skills/` 目录放 SKILL.md 即可教 Agent 按固定流程做事（渐进式披露）；技能可带脚本，经 danger 档审批后执行
 - **RAG 知识库问答**：检索命中后回答带 `[1] [2]` 引用编号，Web 端渲染可展开的引用卡片
 - **长期记忆**：跨会话记住你的偏好与事实（如生日），自动抽取 + 合并
@@ -119,7 +119,7 @@ FastAPI 后端 (:8000) ←──────────┤
 | Node.js        | 18+                                         | 仅 Web 端           |
 | LLM API Key    | 任意 OpenAI 兼容网关（GLM / DashScope / DeepSeek…） | 必需                |
 | Tavily API Key | 联网搜索用                                       | 可选（缺 Key 该工具自动禁用） |
-| Docker Engine + runsc | 服务端沙箱查询（git_query / rg_query）执行环境 | 可选（Engine 不可达时这两个工具自动禁用） |
+| Docker Engine + runsc | 服务端沙箱查询（git_query / rg_query）执行环境，opensandbox-server 一条龙部署见 [deploy/opensandbox/README.md](./deploy/opensandbox/README.md) | 可选（server 不可达时这两个工具自动禁用；可切 docker-py 回滚驱动直连） |
 
 ### 2. 安装依赖
 
@@ -192,10 +192,11 @@ cd frontend && npm install && npm run dev
 
 ### 7. Docker 部署（可选，生产形态）
 
-backend 提供生产镜像与 compose 编排（服务端沙箱查询所需的 runsc 沙箱由 backend 容器经挂载的 docker.sock 驱动）：
+backend 提供生产镜像与 compose 编排；服务端沙箱查询由独立常驻的 opensandbox-server 承担（server 挂 docker.sock 创建 runsc 沙箱，backend 容器不再挂 socket，经 OpenSandbox SDK 调用）：
 
 ```bash
-# 前置：沙箱镜像已在 Engine 构建；WSL2 需先钉住发行版（完整步骤见链接文档）
+# 前置：opensandbox-server 与沙箱镜像已在 Engine 准备（一条龙见 deploy/opensandbox/README.md）；
+# WSL2 需先钉住发行版
 cd deploy/compose
 cp .env.example .env      # 填 GLM_API_KEY / WINDOWS_HOST_IP / DOCKER_GID
 docker compose up -d --build
@@ -369,6 +370,7 @@ YuanAgent/
 | [docs/local-runner.md](./docs/local-runner.md)             | 本地执行器（YuanRunner）实施方案：架构 / 协议 / 安全 / 打包部署 |
 | [docs/workspace.md](./docs/workspace.md)                   | 多工作目录方案：按会话绑定 / 目录上报 / 动态热切换               |
 | [docs/deploy-wsl-engine.md](./docs/deploy-wsl-engine.md)   | backend 容器化 + runsc 沙箱 Engine 部署（WSL2 / 真机通用）   |
+| [deploy/opensandbox/README.md](./deploy/opensandbox/README.md) | opensandbox-server 部署：沙箱网络与防火墙出向封锁 / 配置渲染 / keepalive / 镜像 digest 钉定 |
 | [docs/roadmap.md](./docs/roadmap.md)                       | 演进路线与现状差异清单                                   |
 
 ## Roadmap

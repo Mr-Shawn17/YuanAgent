@@ -32,7 +32,7 @@
 
 - **流式对话**：CLI 终端打字机效果，或浏览器 Web 界面 SSE 流式输出
 - **工具调用**：时间、计算器、联网搜索、沙箱文件读写、知识库检索等内置工具，外加 MCP 协议接入的第三方工具
-- **服务端沙箱查询**：git_query（白名单 git 子命令：log / show / diff / grep / shortlog / describe 等）与 rg_query（ripgrep 内容检索）在 gVisor（runsc）容器内对公开 GitHub 仓库的只读副本执行——read 档免审批、容器断网、跑完即焚（见 6.7）
+- **服务端沙箱查询**：git_query（白名单 git 子命令：log / show / diff / grep / shortlog / describe 等）与 rg_query（ripgrep 内容检索）经 OpenSandbox 会话级沙箱池在 gVisor（runsc）沙箱内对公开 GitHub 仓库的只读副本执行——read 档免审批、防火墙断网、1 会话 1 沙箱复用、空闲 TTL 自动回收（见 6.7）
 - **子 Agent 分流**：主 Agent 只做路由与汇总——调研任务委派给 research 子 Agent，沙箱写文件委派给 coding 子 Agent；多对象对比类问题经 `fan_out` 并行拆分执行（`config/agent.yaml` 一键开关，见[第 8 章](#8-子-agent-分流与-fan_out-并行)）
 - **RAG 知识库**：检索命中后回答带 `[1] [2]` 引用编号，Web 端渲染可展开的引用卡片
 - **三级权限审批**：`read` 档工具直接执行；`write` / `danger` 档执行前必须经你确认（CLI 终端询问，Web 弹窗阻断）
@@ -256,7 +256,7 @@ cd frontend && npm run dev
 
 ### 5.5 Docker 部署（可选，生产形态）
 
-backend 提供生产镜像（`deploy/backend/Dockerfile`）与 compose 编排（`deploy/compose/`）；6.7 节的服务端沙箱查询在容器化形态下由 backend 容器经挂载的 docker.sock 驱动 runsc 沙箱执行：
+backend 提供生产镜像（`deploy/backend/Dockerfile`）与 compose 编排（`deploy/compose/`）；6.7 节的服务端沙箱查询在容器化形态下由独立常驻的 **opensandbox-server** 承担：server 容器挂 docker.sock（DooD）创建 runsc 沙箱，backend 容器不再挂 socket，经 OpenSandbox SDK 调用 server 并直连沙箱内 execd 执行命令：
 
 ```bash
 cd deploy/compose
@@ -264,7 +264,7 @@ cp .env.example .env       # 按注释填 GLM_API_KEY / WINDOWS_HOST_IP / DOCKER
 docker compose up -d --build
 ```
 
-前置：沙箱镜像 `yuan-sandbox-git` 已在 Engine 构建（`docker build -t yuan-sandbox-git deploy/sandbox`），缺失时 git_query / rg_query 报 `sandbox_unavailable`。MySQL / Qdrant / Langfuse 等基础设施仍由各自 compose 管理，backend 容器经宿主 IP（compose 里注册为 `winhost`）跨界连接。
+前置：opensandbox-server 已部署（`deploy/opensandbox/README.md`：沙箱网络 + 防火墙出向封锁 + 配置渲染 + compose 一条龙），沙箱镜像 `yuan-sandbox-exec` 已在 Engine 构建（`docker build -t yuan-sandbox-exec -f deploy/sandbox/Dockerfile.exec deploy/sandbox`），缺失时 git_query / rg_query 报 `sandbox_unavailable`。容器化 backend 还需在 compose 的 environment 里注入 `SANDBOX_QUERY__OPENSANDBOX_SERVER_URL` 与 `SANDBOX_QUERY__OPENSANDBOX_API_KEY`（env 覆盖层命名规则：字段路径大写、层级 `__` 连接；server 控制面发布在 Engine 的 0.0.0.0:8080）。MySQL / Qdrant / Langfuse 等基础设施仍由各自 compose 管理，backend 容器经宿主 IP（compose 里注册为 `winhost`）跨界连接。
 
 WSL2 沙箱 Engine 的完整部署步骤（钉住发行版、mirror 目录、compose 参数采集）见 [deploy-wsl-engine.md](./docs/deploy-wsl-engine.md)；真 Linux 服务器部署相同（无 WSL 特有节）。
 
@@ -390,20 +390,22 @@ python -m runner set-git-cred github.com --username <你的用户名>
 
 ### 6.7 服务端沙箱只读查询（git_query / rg_query）
 
-> 更新：2026-11-11。与 6.6 四件套方向相反：这条链路全部发生在**服务端**，不经本机 runner。详细 spec 见 `docs/sandbox-query.md`（本地文档，不入库）。
+> 更新：2026-11-17。与 6.6 四件套方向相反：这条链路全部发生在**服务端**，不经本机 runner。沙箱驱动已从 backend 内 docker-py 直连迁移到 **OpenSandbox**（阿里开源沙箱运行时，会话级沙箱池形态），spec 见 `docs/opensandbox-migration.md`（v1.1）；`docs/sandbox-query.md` 为前身方案（本地文档，不入库）。
 
 | 工具 | 干什么 | 权限 |
 | --- | --- | --- |
 | `git_query` | 对公开 GitHub 仓库执行白名单 git 查询：log / show / diff / branch / ls-files / grep（-n/-i/-w/-v/-E/-F/-e）/ shortlog / describe、log -S/-G pickaxe 等（子命令与选项双重白名单） | read，免审批 |
 | `rg_query` | 用 ripgrep 在同一仓库的代码内容里做正则检索，白名单选项：-i 忽略大小写、-w 全词、-n 行号、-g \<glob\>、-t \<类型\>、-m 每文件上限、-A/-B/-C 上下文行数 | read，免审批 |
 
-两个工具共用同一套沙箱纪律：
+两个工具共用同一套沙箱纪律（OpenSandbox 驱动，默认）：
 
-- 服务端把目标仓库（`owner/repo`）clone 成**只读副本**（Mirror，TTL 30 分钟过期即 fetch 刷新），在一次性 runsc（gVisor）容器内以只读挂载执行命令：**容器断网、跑完即焚、无沙箱不执行**（绝不回退宿主直跑）。
-- read 档免审批的前提就是这条沙箱不变量；模型只能传结构化参数（repo_ref / 子命令 / 模式 / 路径），命令行由驱动层白名单拼装，`--pre` 等可执行项与路径穿越（`../`、绝对路径、盘符、反斜杠）一律拒绝。
-- 输出封顶 20000 字符；rg 退出码 1 = 无命中，会渲染成「无匹配」而非报错。
-- 部署前提：服务端可达的 Docker Engine 且 runsc 已注册、沙箱镜像已构建（见 5.5 与 deploy-wsl-engine.md）。Engine 不可达时两个工具在装配期**自动禁用**（registry 记禁用原因），不影响其余功能。
-- 配置在 `config/agent.yaml` 的 `runtime.sandbox_query` 段（docker_host / 副本 TTL / 超时与资源上限）；工具挂在 research 子 Agent 白名单里，网页上说「查一下 xxx 仓库最近的提交」即可触发。
+- **会话级沙箱池**（1 会话 1 沙箱）：同一会话内所有查询复用同一个常驻 runsc（gVisor）沙箱——首条命令触发创建（秒级，含 execd 注入与就绪探测），后续命令毫秒级直连沙箱内 execd；空闲 300 秒（`idle_ttl_seconds` 可配）或会话结束（`/new` 切换、`/exit` 退出）即销毁；沙箱被外部销毁时下次查询自动重建。**无沙箱不执行**（绝不回退宿主直跑）。
+- 服务端把目标仓库（`owner/repo`）clone 成**只读副本**（Mirror，TTL 30 分钟过期即 fetch 刷新；检出树停留在 clone 时点），以只读方式挂进沙箱；**沙箱防火墙断网**——专用 bridge 网络 + 宿主 iptables 出向四向封锁（外网 / 其他容器 / 宿主服务 / 沙箱互访全断，仅保留宿主连入的执行通道），见 `deploy/opensandbox/README.md`。
+- read 档免审批的前提就是这条沙箱不变量；模型只能传结构化参数（repo_ref / 子命令 / 模式 / 路径），命令经 execd 以 argv 直传（无 shell），白名单语义与迁移前一致，`--pre` 等可执行项与路径穿越（`../`、绝对路径、盘符、反斜杠）一律拒绝，被拒参数不会触达沙箱。
+- 输出边收边封顶 20000 字符（超限带 `[truncated]` 标记）；rg 退出码 1 = 无命中，会渲染成「无匹配」而非报错。
+- **装配期探活**（server 与 backend 双重闸）：backend 不只 ping server 存活，还起一次性探针沙箱验证 `secure_runtime` 确为 gvisor（uname 内核指纹，防漏配悄悄回退 runc）；server 自身对非法 secure_runtime 配置拒绝启动。任一失败两个工具在装配期**自动禁用**（registry 记禁用原因），不影响其余功能。
+- 配置在 `config/agent.yaml` 的 `runtime.sandbox_query` 段：`driver`（opensandbox 默认 / docker-py 迁移期回滚开关，直连 runsc 一次性容器）、`opensandbox_server_url`、`opensandbox_api_key`、`idle_ttl_seconds`；工具挂在 research 子 Agent 白名单里，网页上说「查一下 xxx 仓库最近的提交」即可触发。
+- 部署：opensandbox-server + 沙箱镜像 `yuan-sandbox-exec`（execd 基底 + git/rg）+ 沙箱网络与防火墙，一条龙见 `deploy/opensandbox/README.md`；Engine 侧通用步骤（钉住发行版、mirror 目录）见 deploy-wsl-engine.md。
 
 ---
 
@@ -645,13 +647,13 @@ skills:
 | `limits` | 单轮熔断限额：`max_tool_calls_per_turn`（默认 12）/ `max_model_calls_per_turn`（默认 15） |
 | `history` | 上下文压缩：摘要触发阈值（默认 12000 tokens）、保留消息数（默认 20） |
 | `server` | 启动脚本读取：Python 环境根目录、后端/前端端口 |
-| `runtime` | 运行时配置（原 .env 内容）：模型三档（main / fast / fallback）、MySQL、知识库、第三方 Key 环境变量名、CORS、Web 鉴权、日志目录与保留天数、Langfuse 可观测、沙箱查询（sandbox_query：Docker Host / 副本 TTL / 超时与资源上限） |
+| `runtime` | 运行时配置（原 .env 内容）：模型三档（main / fast / fallback）、MySQL、知识库、第三方 Key 环境变量名、CORS、Web 鉴权、日志目录与保留天数、Langfuse 可观测、沙箱查询（sandbox_query：driver 驱动开关 / opensandbox_server_url / opensandbox_api_key / idle_ttl_seconds / docker_host / 副本 TTL / 超时与资源上限） |
 | `routing` | 子 Agent 分流：总开关、主 Agent 保留清单、research / coding 定义、fan_out 参数 |
 | `skills` | 技能：总开关、目录、白名单、脚本执行约束（超时/输出上限） |
 
 ### 10.2 config/tools.yaml
 
-工具白名单（`default_allow: false`，未登记一律禁用）、每个工具的权限档位、文件工具沙箱根目录（`data/workspace`，沙箱外路径一律拒绝）、服务端沙箱查询工具开关（`git_query` / `rg_query`，requires_docker 语义：Engine 不可达时装配期自禁）、KB 模式开关。
+工具白名单（`default_allow: false`，未登记一律禁用）、每个工具的权限档位、文件工具沙箱根目录（`data/workspace`，沙箱外路径一律拒绝）、服务端沙箱查询工具开关（`git_query` / `rg_query`，requires_opensandbox 语义：server 不可达或 secure_runtime 非 gvisor 时装配期自禁）、KB 模式开关。
 
 ### 10.3 config/mcp.yaml
 
@@ -841,7 +843,7 @@ RAG 服务未启动，或 Qdrant / embedding 服务不可用。单个 MCP Server
 
 **git_query / rg_query 报「沙箱不可用」或工具清单里没有**
 
-这两个工具只在服务端 Docker Engine 的 runsc（gVisor）容器内执行，装配期 Engine / runsc 不可达或沙箱镜像缺失时会整体自禁（设计如此，不报错、不影响其余功能）。排查顺序：`docker info | grep -A2 Runtimes` 确认 runsc 已注册；`docker build -t yuan-sandbox-git deploy/sandbox` 构建沙箱镜像；确认 `config/agent.yaml` 的 `runtime.sandbox_query` 段与 research 子 Agent 的 `allowed_tools` 包含这两个工具。完整部署见 [docs/deploy-wsl-engine.md](./docs/deploy-wsl-engine.md)。
+这两个工具只在服务端 OpenSandbox 管理的 runsc（gVisor）沙箱内执行，装配期探活（server 可达 + gvisor 指纹 + 镜像就绪）不通过时会整体自禁（设计如此，不报错、不影响其余功能）。排查顺序：`curl http://<Engine-IP>:8080/health` 确认 opensandbox-server 存活；`bash deploy/opensandbox/prepare-network.sh` 重建沙箱网络/防火墙并渲染配置（幂等）；`docker images | grep yuan-sandbox-exec` 确认沙箱镜像已构建；确认 `config/agent.yaml` 的 `runtime.sandbox_query` 段（driver=opensandbox 时 server_url / api_key 必填，api_key 同 `deploy/opensandbox/.runtime/.api_key`）与 research 子 Agent 的 `allowed_tools` 包含这两个工具。完整部署见 [deploy/opensandbox/README.md](./deploy/opensandbox/README.md)；临时回滚把 `driver` 改为 `docker-py`（直连 runsc，需 `docker_host` 可达且 `yuan-sandbox-git` 镜像在）。
 
 **npm 命令不识别（Windows PowerShell）**
 
@@ -871,13 +873,15 @@ YuanAgent/
 │                         # verify_local_runner.py、verify_workspace.py、
 │                         # verify_codex_tools.py、e2e_drive.py、init_langfuse_prompts.py
 ├── deploy/               # backend/（生产镜像 Dockerfile）、compose/（backend 容器编排，见 5.5）、
-│                         # sandbox/（git_query / rg_query 沙箱镜像）、langfuse/（见第 13 章）
+│                         # sandbox/（沙箱镜像：Dockerfile.exec 为 yuan-sandbox-exec，Dockerfile 为 docker-py 回滚镜像）、
+│                         # opensandbox/（opensandbox-server 编排 + 沙箱网络/防火墙脚本，见其 README）、langfuse/（见第 13 章）
 ├── tests/                # unit（离线）/ integration / eval（RAG 金标准）
 ├── data/                 # kb_stub 语料 + workspace 沙箱
 ├── docs/                 # architecture.md、architecture-brief.md、design.md、
 │                         # fanout-guide.md、local-runner.md、workspace.md、
 │                         # roadmap.md、deploy-wsl-engine.md
-│                         # （sandbox-query.md、codex-integration.md 为本地文档，不入库）
+│                         # （sandbox-query.md、codex-integration.md、opensandbox-migration.md（沙箱驱动迁移 spec）、
+│                         #  wayfinder/（决策图）为本地文档，不入库）
 ├── usage.md              # 使用手册（本文，仓库根）
 ├── Makefile              # 常用命令入口
 └── LICENSE               # MIT

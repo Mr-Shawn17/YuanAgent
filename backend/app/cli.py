@@ -5,6 +5,7 @@ import logging
 import signal
 import uuid
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
 
@@ -36,6 +37,7 @@ from app.agents.state import initial_state_fields
 from app.agents.subagents import apply_routing, load_routing_config, routing_note
 from app.core.config import Settings, get_agent_config, get_settings
 from app.core.errors import AppError
+from app.sandbox.pool import get_pool
 from app.core.events import (
     AgentEvent,
     ApprovalDecidedEvent,
@@ -526,8 +528,13 @@ async def _chat_loop(
                             skill_catalog=skill_catalog,
                         )
                         if action.get("exit"):
+                            with suppress(Exception):
+                                await get_pool(settings).destroy_session(session_id)
                             break
                         if isinstance(action.get("session_id"), str):
+                            # 会话切换 = 旧会话终点：强制销毁其沙箱（spec §4.3 硬规则）
+                            with suppress(Exception):
+                                await get_pool(settings).destroy_session(session_id)
                             session_id = action["session_id"]
                             console.print(f"[green]✓[/] 已切换到会话 [cyan]{session_id[:12]}[/]")
                         continue
@@ -616,6 +623,9 @@ async def _chat_loop(
                     f"/{settings.mysql_database}）[/]"
                 )
     finally:
+        # 会话级沙箱池兜底回收（spec §4.3：进程退出销毁全部会话沙箱）
+        with suppress(Exception):
+            await get_pool(settings).destroy_all()
         await database.aclose()
 
 

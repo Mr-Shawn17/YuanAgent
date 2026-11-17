@@ -136,6 +136,23 @@ def _classify_result(result: ToolResult) -> tuple[str, str | None]:
     return AUDIT_STATUS_OK, None
 
 
+AUDIT_ARTIFACT_KEY = "yuan_audit"  # 工具→审计补充字段信封键（本仓库自有工具的命名空间）
+
+
+def _result_artifact(result: ToolResult) -> dict[str, Any]:
+    """content_and_artifact 工具的审计补充字段（沙箱 driver/id/镜像/退出码，TC-16）。
+
+    只认 AUDIT_ARTIFACT_KEY 信封键——langchain 会给 ToolMessage 自动附
+    structured_content artifact，盲目合并会把非审计字段泄进 args_redacted。
+    其余工具返回空 dict，审计结构不变。
+    """
+    artifact = getattr(result, "artifact", None)
+    if not isinstance(artifact, dict):
+        return {}
+    envelope = artifact.get(AUDIT_ARTIFACT_KEY)
+    return dict(envelope) if isinstance(envelope, dict) else {}
+
+
 def _result_preview(result: ToolResult) -> str:
     """把工具结果压成单行短预览，供 tool_end 事件在终端渲染。"""
     if isinstance(result, ToolMessage):
@@ -338,7 +355,7 @@ class ToolPermissionMiddleware(AgentMiddleware):
             tool_name=tool_name,
             tier=tier,
             status=status,
-            args_redacted=redacted,
+            args_redacted={**redacted, **_result_artifact(result)},
             approved_by_user=approved_by_user,
             latency_ms=latency_ms,
             error_message=error_message,

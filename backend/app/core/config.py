@@ -72,18 +72,31 @@ class AgentFileConfig(BaseModel):
 
 
 class SandboxQueryConfig(BaseModel):
-    """git_query 沙箱查询配置段（docs/sandbox-query.md §11，agent.yaml 的 runtime.sandbox_query）。
+    """git_query 沙箱查询配置段（docs/sandbox-query.md §11 + docs/opensandbox-migration.md §10）。
 
     mirror 双路径（用户 2026-11-10 决策 A）：
     mirror_root        backend 侧路径——RepoSource clone/fetch 目标；
                        空 = workspace/mirrors（生产 compose 把 Engine bind 目录挂到这里）
-    mirror_engine_root Engine 侧路径——沙箱容器 --mount src 前缀（如 /var/lib/yuan-mirrors）；
+    mirror_engine_root Engine 侧路径——沙箱挂载源前缀（如 /var/lib/yuan-mirrors）；
                        空 = 回退 mirror_root（backend 与 Engine 同文件系统的场景）
-    docker_host        Docker Engine 地址；空 = 默认 socket（Windows dev 无 Docker 时
-                       工具整体自禁，requires_docker 语义）
+                       opensandbox 驱动下沙箱挂的是 Engine 侧 mirrors 根，此项必须为
+                       Engine 内绝对路径
+    docker_host        docker-py 驱动的 Docker Engine 地址；空 = 默认 socket
+    driver             沙箱驱动：opensandbox（默认，会话级沙箱池）| docker-py
+                       （迁移期回滚开关，直连 runsc 临时容器，见 spec v1.1 §11）
+    opensandbox_server_url  opensandbox-server 控制面地址（opensandbox 驱动必填），
+                       如 http://172.28.146.229:8080
+    opensandbox_api_key     控制面 API key（server 非交互模式强制，issue #750）；
+                       与 deploy/opensandbox/.runtime/.api_key 同值
+    idle_ttl_seconds   会话级沙箱空闲 TTL（Q9，backend 自建回收；不用 opensandbox
+                       的绝对过期 timeout）
     """
 
     docker_host: str = ""
+    driver: str = "opensandbox"
+    opensandbox_server_url: str = ""
+    opensandbox_api_key: str = ""
+    idle_ttl_seconds: int = Field(default=300, ge=30)
     clone_url_prefix: str = ""
     mirror_root: str = ""
     mirror_engine_root: str = ""
@@ -92,6 +105,14 @@ class SandboxQueryConfig(BaseModel):
     output_max_chars: int = Field(default=20000, ge=1000)
     memory: str = "512m"
     cpus: str = "0.5"
+
+    @field_validator("driver")
+    @classmethod
+    def _check_driver(cls, value: str) -> str:
+        if value not in ("opensandbox", "docker-py"):
+            msg = f"sandbox_query.driver 非法：{value}（可选 opensandbox | docker-py）"
+            raise ValueError(msg)
+        return value
 
     @field_validator("memory")
     @classmethod
