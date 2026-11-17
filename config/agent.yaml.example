@@ -149,12 +149,16 @@ runtime:
   # Windows dev：mirror_root 配 \\wsl.localhost UNC 直写 Engine 侧目录（需先在
   #               发行版里 mkdir -p /var/lib/yuan-mirrors 并放开写权限）。
   sandbox_query:
-    docker_host: ""                       # 空=默认 socket；Windows dev 指向 Engine（如 tcp://<WSL-IP>:2375）
+    driver: opensandbox                   # 沙箱驱动：opensandbox（会话级沙箱池）| docker-py（回滚开关，直连 runsc 临时容器）
+    opensandbox_server_url: ""            # opensandbox 驱动必填，如 http://172.28.146.229:8080（Engine IP，见 deploy/opensandbox/README.md）
+    opensandbox_api_key: ""               # 控制面 API key（deploy/opensandbox/.runtime/.api_key 同值）
+    idle_ttl_seconds: 300                 # 会话级沙箱空闲 TTL（Q9；缩短可对冲 rootfs 可写威胁窗口）
+    docker_host: ""                       # docker-py 驱动：空=默认 socket；Windows dev 指向 Engine（如 tcp://<WSL-IP>:2375）
     clone_url_prefix: ""                  # 匿名 clone 前缀兜底，国内不稳时配 https://ghfast.top/
     mirror_root: ""                       # 空 = workspace/mirrors
-    mirror_engine_root: ""                # 空 = 回退 mirror_root 本身
+    mirror_engine_root: ""                # 空 = 回退 mirror_root 本身；opensandbox 驱动必须为 Engine 内绝对路径（如 /var/lib/yuan-mirrors）
     mirror_ttl_seconds: 1800              # 副本新鲜度 TTL；过期 fetch --all --prune（预算 120s）
-    command_timeout_seconds: 60           # 容器内 git 命令预算；docker 等待 90s ≤ fetch 120s ≤ research 300s
+    command_timeout_seconds: 60           # 容器内 git 命令预算；execd 等待 90s ≤ fetch 120s ≤ research 300s
     output_max_chars: 20000
     memory: 512m
     cpus: "0.5"
