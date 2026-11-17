@@ -1,0 +1,40 @@
+# opensandbox-server 配置模板（spec docs/opensandbox-migration.md §10.2，v1.1 Q11 修订）
+# 本文件是模板：__HOST_IP__ 与 __API_KEY__ 由 prepare-network.sh 渲染，产物落
+# deploy/opensandbox/.runtime/sandbox.toml（gitignore，compose 挂载它）。
+# host_ip 每次启动重探（WSL IP 漂移，T06 坑 6 同源）；api_key 首次生成后固化于
+# .runtime/.api_key，backend 侧同值配 agent.yaml 的 sandbox_query.opensandbox_api_key。
+
+[runtime]
+type = "docker"
+# execd 注入源镜像：钉 BOM digest（umbrella 版本无 Cosign 签名，上游 issue #2463）
+execd_image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd@sha256:fe7cc04ab5af5542442a717c0a1978af8f29f450ba429bcded50fc6e9953f9a9"
+
+[secure_runtime]
+type = "gvisor"           # 硬不变量：backend 装配期校验，非 gvisor 拒绝装配（Q7）
+docker_runtime = "runsc"
+
+[docker]
+# Q11 修订：none/internal 下执行通道死路（实测），断网改为专用 bridge + 宿主防火墙
+# 出向封锁（deploy/opensandbox/prepare-network.sh），效果与 none 等价（四向全断）
+network_mode = "yuan-sandbox-net"
+pids_limit = 64           # per-sandbox（官方字段语义 Max PIDs per sandbox container）
+drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]
+no_new_privileges = true
+# endpoint URL 的主机段：渲染为 Engine IP（Windows dev 经 WSL IP 直连发布端口，
+# 不走 WSL localhost 转发中继——该中继间歇失效，T06 坑；生产 backend 容器形态
+# 渲染时传 Engine 网关地址）
+host_ip = "__HOST_IP__"
+# 沙箱发布端口池（execd 44772 与 http 8080 各占一个宿主端口；断网模式下无其他暴露）
+port_range_min = 40000
+port_range_max = 60000
+
+[storage]
+# 默认空列表拒绝一切 host bind，只放行 mirror 只读挂载源
+allowed_host_paths = ["/var/lib/yuan-mirrors"]
+
+[hardening]
+enabled = true            # 硬要求：cap-drop/seccomp/no-new-privileges 实际生效（默认关闭，必须显式开）
+
+[server]
+# 控制面 API key（server 非交互模式强制要求，上游 issue #750）
+api_key = "__API_KEY__"

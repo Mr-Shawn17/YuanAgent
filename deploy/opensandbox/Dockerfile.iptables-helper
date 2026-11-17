@@ -1,0 +1,7 @@
+# iptables 助手镜像：宿主防火墙规则经 privileged + host 网络的临时容器安装（Q11），
+# 免去宿主 sudo 交互（Engine 用户在 docker 组）。仅本机使用，不发布。
+FROM alpine:latest
+
+# apk 走清华镜像（与仓库镜像约定一致）
+RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.tuna.tsinghua.edu.cn#g' /etc/apk/repositories \
+    && apk add --no-cache iptables
