@@ -1,0 +1,26 @@
+# opensandbox-server 编排（spec docs/opensandbox-migration.md §10/§11）
+#
+# DooD：server 挂 docker.sock 承担沙箱创建控制面，backend 不再挂 socket（控制面收窄）。
+# 沙箱网络 yuan-sandbox-net 与宿主防火墙出向封锁（Q11）由 prepare-network.sh 预先准备：
+# 网络与规则 + 渲染 .runtime/sandbox.toml（host_ip/api_key 占位符填充），compose 挂载渲染产物。
+# 控制面发布 0.0.0.0：Windows dev 经 Engine IP 直连（不走 WSL localhost 转发中继），
+# 沙箱侧出向已被防火墙封死，暴露面 = Windows 宿主方向（WSL2 NAT 不出局域网）。
+# 生产 backend 容器经共享 compose 网络接入（见 README）。
+
+services:
+  server:
+    image: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/server@sha256:07f9b39adb8cadf68357dd1b86367068210e960fc4cb50e11b75176387557ea7
+    container_name: yuan-opensandbox-server
+    restart: unless-stopped
+    ports:
+      - 8080:8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.runtime/sandbox.toml:/etc/opensandbox/config.toml:ro
+      - server-store:/root/.opensandbox
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+      SANDBOX_CONFIG_PATH: /etc/opensandbox/config.toml
+
+volumes:
+  server-store:

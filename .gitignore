@@ -84,3 +84,6 @@ Thumbs.db
 .workbuddy/
 /tools/
 inter_test/
+
+# opensandbox 运行时渲染产物（含本机 IP 与 API key，不入库）
+deploy/opensandbox/.runtime/

@@ -1,0 +1,14 @@
+# yuan-sandbox-exec：OpenSandbox 沙箱镜像（spec docs/opensandbox-migration.md §5）
+#
+# 基底 = 钉 BOM digest 的 execd 官方镜像（Alpine 3.24 基底）。供应链：umbrella 版本
+# 无 Cosign 签名（上游 issue #2463），身份锚点只有 digest，升级须换 digest 并重跑回归。
+# execd 是纯净基底（不含 git/rg），此处叠加只读查询所需工具；build 在沙箱 Engine
+# （Ubuntu2204）上执行，需临时联网拉包，产物沙箱运行时本身断网（Q11：专用 bridge +
+# 宿主防火墙出向封锁）。
+#
+# 构建：docker build -t yuan-sandbox-exec -f deploy/sandbox/Dockerfile.exec deploy/sandbox
+FROM sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd@sha256:fe7cc04ab5af5542442a717c0a1978af8f29f450ba429bcded50fc6e9953f9a9
+
+# apk 走清华镜像（与仓库 pip/npmmirror 约定一致；官方 CDN 国内拉取缓慢）
+RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.tuna.tsinghua.edu.cn#g' /etc/apk/repositories \
+    && apk add --no-cache git ripgrep

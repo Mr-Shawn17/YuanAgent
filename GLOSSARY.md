@@ -15,6 +15,14 @@
 - **只读命令工具（git_query）**：服务端侧唯一的命令执行面——白名单 git 查询命令在沙箱内对只读副本执行。read 档免审批的前提是每次执行都在沙箱内；**无沙箱不执行，绝不回退宿主直跑**。
 - **只读副本（Mirror）**：服务端为查询持有的公开仓库完整 clone，对沙箱只读挂载。副本的获取与刷新（clone/fetch）只发生在 backend 侧（有网络），沙箱容器永远断网。
 
+### 沙箱驱动（OpenSandbox 迁移，2026-11-15）
+
+- **OpenSandbox**：阿里开源（Apache 2.0 / CNCF Landscape）的 AI Agent 沙箱运行时平台，把沙箱生命周期、命令执行、隔离档统一成一套 API。架构三层：控制面 opensandbox-server（FastAPI + SQLite）、沙箱内代理 execd（Go/Gin daemon）、运行时后端 Docker（单机）/ Kubernetes（分布式）。隔离层可选 gVisor / Kata / Firecracker，服务端级统一配置。
+- **execd**：OpenSandbox 注入沙箱容器的常驻守护进程，接收命令请求（HTTP `/command`，argv 或 shell 形式）并流式返回结果。是 OpenSandbox 与「docker run 一次性 argv」模型的核心差异。
+- **会话级沙箱池**：沙箱粒度策略——同一用户同一会话内复用同一个常驻沙箱，空闲 TTL（可配置）或会话结束销毁。区别于「每命令临时容器」与「用户级缓存」。
+- **沙箱驱动**：backend 与沙箱之间的调用方式。迁移前 = backend 内 docker-py 直连 runsc（每命令临时容器）；迁移后 = backend 经 OpenSandbox SDK 调 opensandbox-server，backend 不再直接持有 docker.sock。
+- **网络分区**：用多台 opensandbox-server 实例隔离不同网络安全域（如断网 server 跑只读查询、联网 server 跑需要网络的内网命令面），而非在一台 server 上做精细出口分流（gVisor 档无法做 egress 白名单）。
+
 ## 仓库来源
 
 - **RepoSource**：向工具供给「某一仓库的本地只读副本」的抽象。MVP 实现为匿名 clone 公开仓库；预留 runner 经 WSS 推 git bundle 的实现（凭证留边缘，公私通吃）。
